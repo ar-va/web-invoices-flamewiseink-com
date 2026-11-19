@@ -30,7 +30,7 @@
     <div class="card empty"><p>{% if search %}No clients match "{{ search }}".{% else %}No clients yet. Add one, or they're added automatically when you create an invoice.{% endif %}</p></div>
     {% endif %}
   </section>
-  <section class="card">
+  <section class="card" id="add">
     <h2>Add client</h2>
     <form method="post" class="stack">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">

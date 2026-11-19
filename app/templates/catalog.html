@@ -28,7 +28,7 @@
     <p class="muted">No saved items yet.</p>
     {% endif %}
   </section>
-  <section class="card">
+  <section class="card" id="add">
     <h2>Add saved item</h2>
     <form method="post" class="stack">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">

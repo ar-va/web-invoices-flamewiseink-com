@@ -4,7 +4,7 @@
 <div class="view-head">
   <div>
     <a class="muted small" href="{{ url_for('plans_page') }}">← Monthly billing</a>
-    <h1>{{ r.client_name }} <span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status }}</span></h1>
+    <h1>{{ r.client_name }} <span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status|status_label }}</span></h1>
     <div class="muted">{{ plan_total(r)|money }} per month · {{ schedule_label(r.anchor_day) }} · set up by {{ r.owner_name }}</div>
   </div>
   <div class="btn-row">
@@ -51,7 +51,7 @@
         {% set st = display_status(i) %}
         <tr><td><a href="{{ url_for('invoice_view', iid=i.id) }}">{{ i.number }}</a></td>
             <td>{{ i.period_start|datefmt }}</td><td class="r">{{ i.total_cents|money }}</td>
-            <td class="r">{{ balance_of(i)|money }}</td><td><span class="badge {{ st }}">{{ st }}</span></td></tr>
+            <td class="r">{{ balance_of(i)|money }}</td><td><span class="badge {{ st }}">{{ st|status_label }}</span></td></tr>
       {% endfor %}
       </tbody>
     </table>

@@ -24,7 +24,7 @@
       <td>{{ schedule_label(r.anchor_day) }}</td>
       <td class="r">{{ plan_total(r)|money }}</td>
       <td>{{ plan_next_label(r) or '—' }}</td>
-      <td><span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status }}</span></td>
+      <td><span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status|status_label }}</span></td>
       {% if sees_all() %}<td class="muted">{{ r.owner_name or '' }}</td>{% endif %}
     </tr>
   {% endfor %}

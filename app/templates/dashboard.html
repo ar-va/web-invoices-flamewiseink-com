@@ -1,7 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
+<div class="page-head">
+  <h1>{{ greeting() }}, {{ current_user().name.split()[0] }}</h1>
+  {% if stats.overdue %}<p class="muted">{{ stats.overdue }} invoice{{ 's' if stats.overdue != 1 }} {{ 'are' if stats.overdue != 1 else 'is' }} past due. <a href="?f=overdue">Show {{ 'them' if stats.overdue != 1 else 'it' }}</a></p>
+  {% else %}<p class="muted">Nothing is overdue.</p>{% endif %}
+</div>
 <div class="stats">
-  <div class="stat"><span>Outstanding</span><strong>{{ stats.outstanding|money }}</strong></div>
+  <a class="stat" href="?f=open"><span>Still owed</span><strong>{{ stats.outstanding|money }}</strong></a>
   <a class="stat {% if stats.overdue %}warn{% endif %}" href="?f=overdue"><span>Overdue</span><strong>{{ stats.overdue }}</strong></a>
   <a class="stat" href="?f=draft"><span>Drafts</span><strong>{{ stats.drafts }}</strong></a>
   <div class="stat"><span>Received this month</span><strong>{{ stats.paid_month|money }}</strong></div>
@@ -21,7 +26,7 @@
 </div>
 
 {% if invoices %}
-<table class="list">
+<table class="list dash-list">
   <thead><tr><th>Number</th><th>Client</th><th>Issued</th><th>Due</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th>{% if sees_all() %}<th>By</th>{% endif %}</tr></thead>
   <tbody>
   {% for i in invoices %}
@@ -33,7 +38,7 @@
       <td>{{ i.due_date|datefmt }}</td>
       <td class="r">{{ i.total_cents|money }}</td>
       <td class="r">{{ balance_of(i)|money if i.status != 'void' else '—' }}</td>
-      <td><span class="badge {{ st }}">{{ st }}</span></td>
+      <td><span class="badge {{ st }}">{{ st|status_label }}</span></td>
       {% if sees_all() %}<td class="muted">{{ i.artist_name or '' }}</td>{% endif %}
     </tr>
   {% endfor %}

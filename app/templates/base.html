@@ -5,33 +5,53 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>{% block title %}Invoices{% endblock %} · {{ s.business_name }}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=4">
 <style>:root{--accent: {{ s.accent_color }};}</style>
 {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
 {% if current_user() and not public %}
+{% set me = current_user() %}
 <header class="topbar no-print">
   <a class="brand" href="{{ url_for('dashboard') }}">
     {% if s.logo %}<img src="{{ url_for('uploads', name=s.logo) }}" alt="">{% endif %}
-    <span>{{ s.business_name }}</span>
+    <span class="brand-name">{{ s.business_name }}</span>
   </a>
-  <nav>
-    <a href="{{ url_for('dashboard') }}">Invoices</a>
-    <a href="{{ url_for('plans_page') }}">Monthly billing</a>
-    <a href="{{ url_for('clients_page') }}">Clients</a>
-    <a href="{{ url_for('catalog_page') }}">Saved items</a>
-    <a class="btn small" href="{{ url_for('invoice_new') }}">+ New invoice</a>
-    {% if current_user().role == 'admin' %}
-      <a href="{{ url_for('settings_page') }}">Settings</a>
-      <a href="{{ url_for('users_page') }}">Accounts</a>
-    {% endif %}
-    <a href="{{ url_for('account') }}">{{ current_user().name }}</a>
-    <form method="post" action="{{ url_for('logout') }}" class="inline">
-      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-      <button class="link">Log out</button>
-    </form>
+
+  <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="main-nav">Menu</button>
+  <nav id="main-nav" class="main-nav" aria-label="Main">
+    {% for key, endpoint, label in [('invoices', 'dashboard', 'Invoices'), ('billing', 'plans_page', 'Monthly billing'),
+                                   ('clients', 'clients_page', 'Clients'), ('items', 'catalog_page', 'Saved items')] %}
+      <a href="{{ url_for(endpoint) }}" {% if section == key %}class="active" aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
   </nav>
+
+  <div class="top-actions">
+    <details class="menu">
+      <summary class="btn">+ New</summary>
+      <div class="menu-panel right new-panel">
+        <a href="{{ url_for('invoice_new') }}"><strong>Invoice</strong><span>One-time bill for a client</span></a>
+        <a href="{{ url_for('plan_new') }}"><strong>Monthly billing</strong><span>Invoices a client every month</span></a>
+        <a href="{{ url_for('clients_page') }}#add"><strong>Client</strong><span>Save someone's contact details</span></a>
+        <a href="{{ url_for('catalog_page') }}#add"><strong>Saved item</strong><span>A line you add often</span></a>
+      </div>
+    </details>
+    <details class="menu">
+      <summary class="avatar {% if section == 'account' %}active{% endif %}" aria-label="Your account: {{ me.name }}">{{ me.name|initials }}</summary>
+      <div class="menu-panel right">
+        <div class="who"><strong>{{ me.name }}</strong><span>{{ ROLES[me.role][0] }} · {{ me.email }}</span></div>
+        <a href="{{ url_for('account') }}">My account</a>
+        {% if me.role == 'admin' %}
+        <a href="{{ url_for('settings_page') }}">Settings</a>
+        <a href="{{ url_for('users_page') }}">Accounts</a>
+        {% endif %}
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <button class="menu-item">Log out</button>
+        </form>
+      </div>
+    </details>
+  </div>
 </header>
 {% endif %}
 <main class="{% block main_class %}container{% endblock %}">
@@ -40,7 +60,7 @@
   {% endwith %}
   {% block content %}{% endblock %}
 </main>
-<script src="{{ url_for('static', filename='app.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=3"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

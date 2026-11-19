@@ -162,3 +162,26 @@ function initScheduleHint(locked) {
   };
   input.addEventListener('input', show); show();
 }
+
+// Header: phone menu toggle; dropdowns close on outside click, Escape, or when another opens
+(function () {
+  const toggle = document.querySelector('.nav-toggle'), nav = document.getElementById('main-nav');
+  if (toggle && nav) toggle.addEventListener('click', () => {
+    const open = nav.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  const menus = [...document.querySelectorAll('details.menu')];
+  menus.forEach(m => m.addEventListener('toggle', () => {
+    if (m.open) menus.forEach(o => { if (o !== m) o.open = false; });
+  }));
+  document.addEventListener('click', e => menus.forEach(m => { if (m.open && !m.contains(e.target)) m.open = false; }));
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    menus.forEach(m => { if (m.open) { m.open = false; m.querySelector('summary').focus(); } });
+  });
+  // "+ New → Client / Saved item" jump to the add form and focus its first field
+  if (location.hash === '#add') {
+    const first = document.querySelector('#add input:not([type=hidden])');
+    if (first) first.focus();
+  }
+})();

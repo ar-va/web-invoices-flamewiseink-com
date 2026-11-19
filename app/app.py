@@ -1946,7 +1946,42 @@ def _err(e):
 
 @app.context_processor
 def _inject():
-    return {"s": settings()}
+    return {"s": settings(), "section": _section()}
+
+
+SECTIONS = {"invoices": ("dashboard", "invoice_"), "billing": ("plan",), "clients": ("client",),
+            "items": ("catalog",), "account": ("settings_page", "users_page", "user_", "account")}
+
+
+def _section():
+    ep = request.endpoint or ""
+    for name, prefixes in SECTIONS.items():
+        if any(ep.startswith(p_) for p_ in prefixes):
+            return name
+    return ""
+
+
+STATUS_LABELS = {"draft": "Draft", "sent": "Sent", "partial": "Partly paid", "paid": "Paid", "void": "Void",
+                 "overdue": "Overdue", "active": "Active", "paused": "Paused", "ended": "Ended"}
+
+
+@app.template_filter("status_label")
+def status_label(st):
+    return STATUS_LABELS.get(st, str(st).capitalize())
+
+
+@app.template_filter("initials")
+def initials(name):
+    parts = [w for w in str(name or "").split() if w]
+    return ("".join(w[0] for w in parts[:2]) or "?").upper()
+
+
+def greeting():
+    hour = datetime.now(ZoneInfo(os.environ.get("TZ") or "America/Toronto")).hour
+    return "Good morning" if hour < 12 else ("Good afternoon" if hour < 18 else "Good evening")
+
+
+app.jinja_env.globals["greeting"] = greeting
 
 
 if __name__ == "__main__":
