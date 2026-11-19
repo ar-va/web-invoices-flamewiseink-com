@@ -88,7 +88,7 @@ DEFAULTS = {
     "tax_number_label": "HST #",
     "tax_number": "",
     "logo": "",
-    "accent_color": "#d9480f",
+    "accent_color": "#df620c",
     "invoice_title": "Invoice",
     "invoice_prefix": "FW-",
     "next_number": "1001",
@@ -1126,7 +1126,7 @@ def settings_page():
             vals[k] = "1" if request.form.get(k) else "0"
         errors = []
         if not re.match(r"^#[0-9a-fA-F]{6}$", vals["accent_color"]):
-            errors.append("Accent color must look like #d9480f.")
+            errors.append("Accent color must look like #df620c.")
         if not vals["next_number"].isdigit():
             errors.append("Next invoice number must be digits only.")
         if not vals["default_due_days"].isdigit():
