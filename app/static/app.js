@@ -128,7 +128,7 @@ function initHelcimPay() {
           });
           const j = await readJson(r);
           if (!r.ok) throw new Error(j.error || 'Could not confirm payment.');
-          location.href = location.pathname + '?paid=1';
+          location.href = location.pathname + (j.pending ? '?pending=1' : '?paid=1');
         } catch (err) { say(err.message, 'danger'); btn.textContent = 'Payment sent'; }
       }
     };

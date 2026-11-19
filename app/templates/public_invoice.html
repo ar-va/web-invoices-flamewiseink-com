@@ -14,6 +14,7 @@
 {% set balance = balance_of(inv) %}
 {% if preview %}<div class="flash info no-print">Preview — this is what your client sees{% if inv.status == 'draft' %}. While it's a draft, clients only see "being updated, check back soon"{% endif %}. <a href="{{ url_for('invoice_view', iid=inv.id) }}">Back to invoice</a></div>{% endif %}
 {% if just_paid %}<div class="flash ok no-print">Payment received — thank you! A record is shown below.</div>{% endif %}
+{% if bank_pending %}<div class="flash ok no-print">Thank you, your bank payment was sent. Bank payments take a few business days to clear, and the invoice updates once it does.</div>{% endif %}
 
 {% if inv.status == 'void' %}
   <div class="flash error">This invoice has been cancelled. No payment is needed.</div>
@@ -31,11 +32,11 @@
     {% endif %}
     {% if helcim_ready() %}
     <div class="pay-option">
-      <h2>Credit or debit card</h2>
-      <p class="small muted">Secure checkout by Helcim.{% if s.helcim_fee == '1' %} A card processing fee may be added.{% endif %}</p>
+      <h2>{{ 'Card or bank payment' if s.helcim_fee == '1' else 'Credit or debit card' }}</h2>
+      <p class="small muted">Secure checkout by Helcim.{% if s.helcim_fee == '1' %} Paying by credit card adds a convenience fee, shown before you pay. Bank payment and e-Transfer have no fee.{% endif %}</p>
       <button class="btn full" id="pay-card"
         data-start="{{ url_for('helcim_start', token=inv.token) }}"
-        data-confirm="{{ url_for('helcim_confirm', token=inv.token) }}">Pay {{ balance|money }} by card</button>
+        data-confirm="{{ url_for('helcim_confirm', token=inv.token) }}">Pay {{ balance|money }} {{ 'online' if s.helcim_fee == '1' else 'by card' }}</button>
       <p class="small" id="pay-status" role="status"></p>
     </div>
     {% endif %}

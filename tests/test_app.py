@@ -656,7 +656,8 @@ Ftok = row(F)["token"]
 with mock.patch.object(A.requests, "post", init_fee):
     r = anon.post(f"/i/{Ftok}/helcim/start", json={})
 assert r.status_code == 200 and r.get_json()["checkoutToken"] == "ct-fee", r.data
-assert seen[0].get("hasConvenienceFee") == 1 and "hasConvenienceFee" not in seen[1]
+assert seen[0].get("hasConvenienceFee") == 1 and seen[0].get("paymentMethod") == "cc-ach"
+assert "hasConvenienceFee" not in seen[1] and "paymentMethod" not in seen[1]
 assert any("without the convenience fee" in e for e in events(F))
 def init_down(url, json=None, headers=None, timeout=None):
     return R(500, {"errors": "down"})
@@ -667,3 +668,59 @@ with A.app.app_context():
     A.save_settings({"helcim_fee": "0"})
 os.environ.pop("HELCIM_API_TOKEN")
 print("CONVENIENCE FEE FALLBACK TESTS PASSED")
+
+# --- Fee Saver accepted; bank (ACH) payments ---
+os.environ["HELCIM_API_TOKEN"] = "t"
+with A.app.app_context():
+    A.save_settings({"helcim_fee": "1"})
+assert "Pay $" in anon.get(f"/i/{Ftok}").get_data(as_text=True) and "Bank payment and e-Transfer have no fee" in anon.get(f"/i/{Ftok}").get_data(as_text=True)
+ach_calls = []
+import itertools as _it
+_ct_counter = _it.count()
+def init_ok2(url, json=None, headers=None, timeout=None):
+    return R(200, {"checkoutToken": f"ach-{next(_ct_counter)}", "secretToken": "s"})
+def ach_get(status_auth, amount="25.00"):
+    def g(url, headers=None, timeout=None):
+        ach_calls.append(url)
+        return R(200, {"transactionId": 8801, "amount": amount, "statusAuth": status_auth, "statusClearing": "OPENED",
+                       "bankToken": "bt", "dateCreated": "2026-11-19 12:00:00"})
+    return g
+msg = {"data": {"data": {"transactionId": 8801, "amount": "25.00", "bankToken": "bt", "statusAuth": "PENDING"}, "hash": "x"}}
+# pending bank payment: not recorded, flagged for staff, client told it's on its way
+with mock.patch.object(A.requests, "post", init_ok2), mock.patch.object(A.requests, "get", ach_get("PENDING")):
+    ct = anon.post(f"/i/{Ftok}/helcim/start", json={}).get_json()["checkoutToken"]
+    r = anon.post(f"/i/{Ftok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": msg})
+assert r.status_code == 200 and r.get_json().get("pending") is True
+assert ach_calls[-1].endswith("/ach/transactions/8801") and row(F)["paid_cents"] == 0
+assert any("bank payment" in e and "once it clears" in e for e in events(F))
+assert "bank payment was sent" in anon.get(f"/i/{Ftok}?pending=1").get_data(as_text=True)
+# approved bank payment: recorded as Helcim (bank), invoice paid, no fee
+msg["data"]["data"]["transactionId"] = 8802
+with mock.patch.object(A.requests, "post", init_ok2), mock.patch.object(A.requests, "get", lambda url, headers=None, timeout=None: R(200, {"transactionId": 8802, "amount": "25.00", "statusAuth": "APPROVED", "statusClearing": "OPENED", "bankToken": "bt"})):
+    ct = anon.post(f"/i/{Ftok}/helcim/start", json={}).get_json()["checkoutToken"]
+    r = anon.post(f"/i/{Ftok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": msg})
+assert r.status_code == 200 and not r.get_json().get("pending")
+with A.app.app_context():
+    p_ = A.q("SELECT * FROM payments WHERE invoice_id=?", (F,), one=True)
+assert p_["method"] == "Helcim (bank)" and p_["amount_cents"] == 2500 and "few business days" in p_["note"]
+assert row(F)["status"] == "paid"
+# declined bank payment
+G = new_invoice(c, csrf(get("/")), "Gus", price="30"); post(f"/invoices/{G}/status", {"action": "sent"}); Gtok = row(G)["token"]
+msg["data"]["data"]["transactionId"] = 8803
+with mock.patch.object(A.requests, "post", init_ok2), mock.patch.object(A.requests, "get", lambda url, headers=None, timeout=None: R(200, {"transactionId": 8803, "amount": "30.00", "statusAuth": "DECLINED", "bankToken": "bt"})):
+    ct = anon.post(f"/i/{Gtok}/helcim/start", json={}).get_json()["checkoutToken"]
+    r = anon.post(f"/i/{Gtok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": msg})
+assert r.status_code == 400 and row(G)["paid_cents"] == 0
+# card payment with fee: fee noted, invoice credited the invoice amount
+H2 = new_invoice(c, csrf(get("/")), "Hank", price="100"); post(f"/invoices/{H2}/status", {"action": "sent"}); H2tok = row(H2)["token"]
+with mock.patch.object(A.requests, "post", init_ok2), mock.patch.object(A.requests, "get", lambda url, headers=None, timeout=None: R(200, {"transactionId": 9901, "amount": "103.00", "status": "APPROVED", "cardToken": "c"})):
+    ct = anon.post(f"/i/{H2tok}/helcim/start", json={}).get_json()["checkoutToken"]
+    r = anon.post(f"/i/{H2tok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": {"data": {"transactionId": 9901, "cardToken": "c"}}})
+assert r.status_code == 200
+with A.app.app_context():
+    p_ = A.q("SELECT * FROM payments WHERE invoice_id=?", (H2,), one=True)
+assert p_["amount_cents"] == 10000 and "incl. $3.00 convenience fee" in p_["note"] and row(H2)["status"] == "paid"
+with A.app.app_context():
+    A.save_settings({"helcim_fee": "0"})
+os.environ.pop("HELCIM_API_TOKEN")
+print("FEE SAVER + BANK PAYMENT TESTS PASSED")

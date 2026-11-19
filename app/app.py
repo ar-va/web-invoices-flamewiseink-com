@@ -52,7 +52,7 @@ ROLES = {
 SEE_ALL_ROLES = L.SEES_ALL_ROLES
 OLD_ROLE_NAMES = {"staff": "manager", "artist": "advertising"}
 STATUSES = [L.DRAFT, L.SENT, L.PARTIAL, L.PAID, L.VOID]
-PAY_METHODS = ["e-Transfer", "Helcim (card)", "Cash", "Debit/Credit (terminal)", "Other"]
+PAY_METHODS = ["e-Transfer", "Helcim (card)", "Helcim (bank)", "Cash", "Debit/Credit (terminal)", "Other"]
 
 log = logging.getLogger("invoices")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1216,7 +1216,8 @@ def public_invoice(token):
         add_event(inv["id"], "Client opened the invoice link")
     items, payments = invoice_bundle(inv["id"])
     return render_template("public_invoice.html", inv=inv, items=items, payments=payments, preview=preview,
-                           just_paid=request.args.get("paid") == "1", public=True)
+                           just_paid=request.args.get("paid") == "1", bank_pending=request.args.get("pending") == "1",
+                           public=True)
 
 
 def helcim_headers():
@@ -1244,7 +1245,9 @@ def helcim_start(token):
         "confirmationScreen": False,
     }
     if settings()["helcim_fee"] == "1":
+        # Helcim Fee Saver: card pays the fee; the bank (ACH) option is the required no-fee choice
         payload["hasConvenienceFee"] = 1
+        payload["paymentMethod"] = "cc-ach"
     unavailable = "Card payments are unavailable right now. Please use e-Transfer or try again later."
     # Errors use 400, not 502/504: Cloudflare replaces those with its own web page.
     try:
@@ -1252,9 +1255,10 @@ def helcim_start(token):
         if r.status_code == 400 and payload.get("hasConvenienceFee") and "convenience fee" in str(body).lower():
             # Helcim only allows the fee when bank (ACH) payments are also on. Take the card without it.
             log.warning("Helcim refused the convenience fee (%s); opening checkout without it", str(body)[:200])
-            add_event(inv["id"], "Card checkout opened without the convenience fee: Helcim needs bank payments "
-                                 "turned on for fees (Settings → Payments)")
+            add_event(inv["id"], "Card checkout opened without the convenience fee: turn on Online Fee Saver and "
+                                 "ACH bank payments for invoicing in Helcim's settings")
             payload.pop("hasConvenienceFee")
+            payload.pop("paymentMethod", None)
             r, body = _helcim_initialize(payload)
     except Exception:  # noqa: BLE001
         log.exception("Helcim initialize failed")
@@ -1315,9 +1319,10 @@ def _hash_ok(txn, given_hash, secret):
     return False
 
 
-def helcim_get_transaction(tid):
+def helcim_get_transaction(tid, ach=False):
     try:
-        r = requests.get(f"{HELCIM_API}/card-transactions/{int(tid)}", headers=helcim_headers(), timeout=20)
+        path = "ach/transactions" if ach else "card-transactions"
+        r = requests.get(f"{HELCIM_API}/{path}/{int(tid)}", headers=helcim_headers(), timeout=20)
         if r.ok:
             j = r.json()
             if isinstance(j, list):
@@ -1351,16 +1356,19 @@ def helcim_confirm(token):
         return jsonify(ok=True)
 
     hash_ok = _hash_ok(txn, given_hash, sess["secret_token"])
-    api_txn = helcim_get_transaction(tid)
+    is_bank = _is_bank_txn(txn)
+    api_txn = helcim_get_transaction(tid, ach=is_bank)
     source = api_txn or (txn if hash_ok else None)
     if not source:
         add_event(inv["id"], f"Card payment attempt (Helcim transaction {tid}) could not be verified - check Helcim")
         return jsonify(error=fail_msg), 400
-    status = str(source.get("status", "")).upper()
     try:
         charged = to_cents(source.get("amount"))
     except ValueError:
         charged = 0
+    if is_bank:
+        return _record_bank_payment(inv, sess, tid, source, charged, verified=bool(api_txn))
+    status = str(source.get("status", "")).upper()
     if status != "APPROVED" or charged <= 0:
         add_event(inv["id"], f"Helcim transaction {tid} not approved (status {status or 'unknown'})")
         return jsonify(error="The payment was not approved."), 400
@@ -1396,6 +1404,52 @@ def helcim_confirm(token):
             set_status(con, inv, out.status, event, paid_delta=out.applied_cents)
     except sqlite3.IntegrityError:
         return jsonify(ok=True)
+    return jsonify(ok=True)
+
+
+BANK_FAILED = ("DECLINED", "FAILED", "RETURNED", "REJECTED", "CANCELLED", "CANCELED", "VOID", "VOIDED", "REFUNDED")
+
+
+def _is_bank_txn(txn):
+    """HelcimPay.js bank (ACH) responses carry bank fields instead of card fields."""
+    return "cardToken" not in txn and any(k in txn for k in ("bankToken", "bankAccountNumber", "statusAuth",
+                                                                 "statusClearing"))
+
+
+def _record_bank_payment(inv, sess, tid, source, charged, verified):
+    """Bank (ACH) payments clear over a few business days. Record them only when Helcim says approved;
+    otherwise log them for staff and tell the client it's on its way."""
+    auth = str(source.get("statusAuth") or source.get("status") or "").upper()
+    clearing = str(source.get("statusClearing") or "").upper()
+    if charged <= 0 or auth in BANK_FAILED or clearing in BANK_FAILED:
+        add_event(inv["id"], f"Bank payment (Helcim #{tid}) was not approved (status {auth or clearing or 'unknown'})")
+        return jsonify(error="The bank payment was not approved."), 400
+    mismatch = _txn_mismatch(source, charged, sess)
+    if mismatch:
+        add_event(inv["id"], f"Bank payment claim rejected (Helcim #{tid}): {mismatch} - check Helcim")
+        return jsonify(error="We couldn't confirm the payment automatically. We'll check it on our side."), 400
+    if auth != "APPROVED":
+        x("UPDATE helcim_sessions SET used=1 WHERE id=?", (sess["id"],))
+        add_event(inv["id"], f"Client started a {money(charged)} bank payment (Helcim #{tid}, status "
+                             f"{auth or 'unknown'}). Record it with 'Helcim (bank)' once it clears in Helcim")
+        return jsonify(ok=True, pending=True)
+    out = L.after_card_payment(state(inv), charged, fee_expected=False)
+    note = "Bank payment: can take a few business days to clear. If Helcim shows it returned, remove this payment"
+    if not verified:
+        note += "; verified by hash only"
+    event = f"Client paid {money(out.applied_cents)} by bank payment (Helcim #{tid})"
+    if out.needs_review:
+        event += " - check: may need a refund"
+    try:
+        with db() as con:
+            con.execute("""INSERT INTO payments(invoice_id,method,amount_cents,paid_on,reference,helcim_transaction_id,
+                           note,created_at) VALUES(?,?,?,?,?,?,?,?)""",
+                        (inv["id"], "Helcim (bank)", out.applied_cents, today().isoformat(), f"Helcim #{tid}",
+                         tid, note, now_iso()))
+            con.execute("UPDATE helcim_sessions SET used=1 WHERE id=?", (sess["id"],))
+            set_status(con, inv, out.status, event, paid_delta=out.applied_cents)
+    except sqlite3.IntegrityError:
+        pass
     return jsonify(ok=True)
 
 
