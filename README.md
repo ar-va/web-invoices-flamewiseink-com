@@ -24,7 +24,7 @@ If the tests fail, nothing is deployed.
 1. **GitHub token.** GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate. Scopes: `repo` and `read:packages`. No expiry or 1 year. Copy it.
 2. **Registry in Portainer.** Portainer → Registries → Add registry → Custom registry. Name `GitHub`, URL `ghcr.io`, Authentication on, username = your GitHub username, password = the token.
 3. **Stack from Git.** Portainer → Stacks → Add stack → name `invoices` → Repository.
-   - Repository URL: `https://github.com/ar-va/web-invoice-flamewiseink-com`
+   - Repository URL: `https://github.com/ar-va/web-invoices-flamewiseink-com`
    - Reference: `refs/heads/main`, Compose path: `docker-compose.yml`
    - Authentication on: GitHub username + the token
    - GitOps updates on → Polling → every `5m`. Turn on **Re-pull image**.
