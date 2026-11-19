@@ -185,3 +185,17 @@ function initScheduleHint(locked) {
     if (first) first.focus();
   }
 })();
+
+// e-Transfer dropdown: "+ Add a new email…" reveals a box to type it
+document.querySelectorAll('.et-picker').forEach(p => {
+  const sel = p.querySelector('.et-select'), box = p.querySelector('.et-new'), hint = p.querySelector('.et-new-hint');
+  const input = box.querySelector('input');
+  const sync = (focus) => {
+    const adding = sel.value === '__new__';
+    box.hidden = hint.hidden = !adding;
+    input.required = adding;
+    if (adding && focus) input.focus();
+  };
+  sel.addEventListener('change', () => sync(true));
+  sync(false);
+});

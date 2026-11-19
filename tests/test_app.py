@@ -186,7 +186,7 @@ post("/settings", {"business_name": "Flame Wise Tattoo Collective", "accent_colo
                    "email_subject": A.DEFAULTS["email_subject"], "email_body": A.DEFAULTS["email_body"]})
 f = get("/invoices/new")
 import re as _re
-_sel = f[f.index('<select name="etransfer_email">'):]
+_sel = f[f.index('<select name="etransfer_email" class="et-select">'):]
 _sel = _sel[:_sel.index('</select>')]
 assert _sel.count('value="artie@flamewiseink.ca"') == 1 and _sel.count('value="ads@flamewiseink.ca"') == 1, _sel
 assert _re.search(r'value="ads@flamewiseink.ca"\s+selected>ads@flamewiseink.ca \(default\)', _sel), _sel
@@ -592,3 +592,36 @@ post("/settings", dict(base, remove_helcim_token="on"))
 with A.app.app_context():
     assert A.helcim_token() == ""
 print("SAVED INTEGRATION SETTINGS TESTS PASSED")
+
+# --- "+ Add a new email…" in the e-Transfer dropdown ---
+TOK = csrf(get("/"))
+assert '<option value="__new__">+ Add a new email…</option>' in get("/invoices/new")
+def inv_with(et, new=""):
+    return c.post("/invoices/new", data={"_csrf": TOK, "client_name": "Nina", "issue_date": "2026-11-19",
+                                         "due_date": "2026-12-03", "tax_rate": "0", "etransfer_email": et,
+                                         "etransfer_email_new": new, "item_desc": ["Ad"], "item_qty": ["1"],
+                                         "item_price": ["10"], "item_taxable": ["1"]})
+assert inv_with("__new__", "").status_code == 400                        # picked "new" but typed nothing
+assert inv_with("__new__", "not-an-email").status_code == 400
+r = inv_with("__new__", "nina.pay@flamewiseink.ca")
+assert r.status_code == 302
+nid = int(r.headers["Location"].split("/")[-1])
+assert row(nid)["etransfer_email"] == "nina.pay@flamewiseink.ca"
+with A.app.app_context():
+    assert A.settings()["etransfer_emails"].splitlines()[-1] == "nina.pay@flamewiseink.ca"
+f = get("/invoices/new")
+assert 'value="nina.pay@flamewiseink.ca"' in f and "added to the e-Transfer email list" in f
+# typing an email that's already listed doesn't add a duplicate
+inv_with("__new__", "NINA.PAY@flamewiseink.ca")
+with A.app.app_context():
+    assert A.settings()["etransfer_emails"].lower().count("nina.pay@flamewiseink.ca") == 1
+# monthly billing form does the same
+with A.app.app_context():
+    any_client = A.q("SELECT id FROM clients LIMIT 1", one=True)["id"]
+r = c.post("/billing/new", data={"_csrf": TOK, "client_id": str(any_client), "start_date": "2030-01-10", "tax_rate": "0",
+                                 "etransfer_email": "__new__", "etransfer_email_new": "plans@flamewiseink.ca",
+                                 "item_desc": ["Ad"], "item_qty": ["1"], "item_price": ["10"], "item_taxable": ["1"]})
+assert r.status_code == 302
+with A.app.app_context():
+    assert "plans@flamewiseink.ca" in A.settings()["etransfer_emails"]
+print("NEW E-TRANSFER EMAIL TESTS PASSED")

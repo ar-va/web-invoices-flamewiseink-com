@@ -243,3 +243,4 @@ body.public main { max-width: 860px; margin: 0 auto; padding: 1.5rem 1rem 3rem; 
   .dash-list th:nth-child(4), .dash-list td:nth-child(4), .dash-list th:nth-child(5), .dash-list td:nth-child(5) { display: none; }
   .page-head h1 { font-size: 1.35rem; }
 }
+[hidden] { display: none !important; }

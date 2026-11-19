@@ -457,6 +457,26 @@ def etransfer_email_for(inv):
     return own or settings()["etransfer_email"]
 
 
+NEW_ETRANSFER = "__new__"
+
+
+def chosen_etransfer(form):
+    """The e-Transfer email picked in the dropdown, or the new one typed after '+ Add a new email…'."""
+    value = form.get("etransfer_email", "").strip()
+    if value == NEW_ETRANSFER:
+        return form.get("etransfer_email_new", "").strip(), True
+    return value, False
+
+
+def remember_etransfer(email):
+    """Add a newly typed e-Transfer email to Settings → Other e-Transfer emails (once)."""
+    if not email or email.lower() in (e.lower() for e in etransfer_email_options()):
+        return False
+    current = settings()["etransfer_emails"].strip()
+    save_settings({"etransfer_emails": (current + "\n" if current else "") + email})
+    return True
+
+
 def etransfer_email_options():
     s = settings()
     opts = [s["etransfer_email"]] + [l.strip() for l in s["etransfer_emails"].splitlines()]
@@ -677,8 +697,11 @@ def parse_invoice_form(form):
         "terms": form.get("terms", "").strip(),
         "number": form.get("number", "").strip(),
         "discount": form.get("discount", "").strip(),
-        "etransfer_email": form.get("etransfer_email", "").strip(),
+        "etransfer_email": "",
     }
+    data["etransfer_email"], data["etransfer_is_new"] = chosen_etransfer(form)
+    if data["etransfer_is_new"] and not data["etransfer_email"]:
+        errors.append("Type the new e-Transfer email, or pick one from the list.")
     if data["etransfer_email"] and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", data["etransfer_email"]):
         errors.append("e-Transfer email doesn't look right.")
     if not data["client_name"]:
@@ -769,6 +792,7 @@ def invoice_new():
                 flash(e, "error")
             return render_template("invoice_form.html", **_form_context(data, items, True)), 400
         iid = save_invoice(None, data, items)
+        _remember_new_etransfer(data)
         flash("Invoice created.", "ok")
         return redirect(url_for("invoice_view", iid=iid))
     day = today()
@@ -784,6 +808,11 @@ def invoice_new():
     }
     items = [{"description": "", "qty": "1", "price": "", "taxable": True}]
     return render_template("invoice_form.html", **_form_context(inv, items, True))
+
+
+def _remember_new_etransfer(data):
+    if data.get("etransfer_is_new") and remember_etransfer(data["etransfer_email"]):
+        flash(f"{data['etransfer_email']} was added to the e-Transfer email list.", "ok")
 
 
 def refuse(iid, err):
@@ -816,6 +845,7 @@ def invoice_edit(iid):
                 flash(e, "error")
             return render_template("invoice_form.html", **_form_context(dict(data, id=iid), items, False)), 400
         save_invoice(iid, data, items, old=inv, new_status=new_status)
+        _remember_new_etransfer(data)
         flash("Invoice saved.", "ok")
         return redirect(url_for("invoice_view", iid=iid))
     items = [{"description": r["description"], "qty": fmt_qty(r["qty"]), "price": plain_money(r["unit_cents"]),
@@ -1552,9 +1582,12 @@ app.jinja_env.globals.update(plan_total=plan_total, plan_next_label=plan_next_la
 
 def _parse_plan_form(form):
     errors = []
-    data = {k: form.get(k, "").strip() for k in ("tax_name", "notes", "terms", "etransfer_email",
+    data = {k: form.get(k, "").strip() for k in ("tax_name", "notes", "terms",
                                                   "start_date", "stop_after", "discount")}
     data["client_id"] = form.get("client_id", type=int)
+    data["etransfer_email"], data["etransfer_is_new"] = chosen_etransfer(form)
+    if data["etransfer_is_new"] and not data["etransfer_email"]:
+        errors.append("Type the new e-Transfer email, or pick one from the list.")
     data["tax_rate"] = form.get("tax_rate", "0").strip() or "0"
     if not data["client_id"] or not q("SELECT 1 FROM clients WHERE id=?", (data["client_id"],), one=True):
         errors.append("Choose a client from the client list.")
@@ -1630,6 +1663,7 @@ def plan_new():
                  current_user()["id"], ts, ts))
             rid = cur.lastrowid
             _insert_items(con, "recurring_items", "recurring_id", rid, items, with_amount=False)
+        _remember_new_etransfer(data)
         made = run_billing()
         msg = "Monthly billing set up."
         if made:
@@ -1683,6 +1717,7 @@ def plan_edit(rid):
                          now_iso(), rid))
             con.execute("DELETE FROM recurring_items WHERE recurring_id=?", (rid,))
             _insert_items(con, "recurring_items", "recurring_id", rid, items, with_amount=False)
+        _remember_new_etransfer(data)
         run_billing()
         flash("Saved. Invoices already created keep their original details.", "ok")
         return redirect(url_for("plan_view", rid=rid))
