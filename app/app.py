@@ -20,6 +20,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from functools import wraps
 from zoneinfo import ZoneInfo
 
@@ -121,9 +122,8 @@ DEFAULTS = {
     "email_subject": "Invoice {number} from {business}",
     "email_body": (
         "Hi {client},\n\n"
-        "Here is invoice {number} for {amount}, due {due_date}.\n\n"
-        "View and pay online: {link}\n\n"
-        "Prefer e-Transfer? Send it to {email} with {number} in the message.\n\n"
+        "Here is invoice {number} from {business} for {amount}, due {due_date}. "
+        "The details are below.\n\n"
         "Thank you,\n{business}"
     ),
 }
@@ -976,6 +976,7 @@ def invoice_view(iid):
     inv = get_invoice(iid)
     items, payments = invoice_bundle(iid)
     events = q("SELECT * FROM events WHERE invoice_id=? ORDER BY id DESC LIMIT 50", (iid,))
+    mail_subject, mail_text, _ = invoice_email_parts(inv)
     share_ids = shared_with(iid)
     shared_people = [r["name"] for r in q("SELECT name FROM users WHERE id IN (%s) ORDER BY name"
                                           % ",".join("?" * len(share_ids)), tuple(share_ids))] if share_ids else []
@@ -983,7 +984,8 @@ def invoice_view(iid):
                  (L.ADVERTISING, inv["created_by"] or 0))
     return render_template("invoice_view.html", inv=inv, items=items, payments=payments, events=events,
                            smtp=smtp_ready(), today=today().isoformat(), acts=allowed(inv),
-                           share_ids=share_ids, shared_people=shared_people, ad_users=ad_users)
+                           share_ids=share_ids, shared_people=shared_people, ad_users=ad_users,
+                           mail_subject=mail_subject, mail_text=mail_text)
 
 
 @app.post("/invoices/<int:iid>/share")
@@ -1124,20 +1126,64 @@ def invoice_delete(iid):
 # --------------------------------------------------------------------------
 
 
+def invoice_email_parts(inv, for_preview=False):
+    """Subject, plain text and HTML for an invoice email: the message from Settings plus a full summary."""
+    s = settings()
+    items = q("SELECT * FROM items WHERE invoice_id=? ORDER BY position", (inv["id"],))
+    payments = q("SELECT * FROM payments WHERE invoice_id=? ORDER BY paid_on, id", (inv["id"],))
+    message = fill_template(s["email_body"], inv)
+    ctx = dict(inv=inv, items=items, payments=payments, message=message, link=public_url(inv),
+               balance=L.balance(L.Invoice.from_row(inv)), etransfer=etransfer_email_for(inv),
+               logo_src=(url_for("uploads", name=s["logo"]) if for_preview else "cid:logo") if s["logo"] else "")
+    return (fill_template(s["email_subject"], inv), render_template("email_invoice.txt", **ctx),
+            render_template("email_invoice.html", **ctx))
+
+
+def send_invoice_email(inv, to):
+    s = settings()
+    subject, text, html = invoice_email_parts(inv)
+    send_email(to, subject, text, reply_to=s["business_email"] or None, html=html,
+               logo_path=os.path.join(UPLOAD_DIR, s["logo"]) if s["logo"] else None)
+
+
+@app.route("/invoices/<int:iid>/email-preview")
+@login_required()
+def invoice_email_preview(iid):
+    inv = get_invoice(iid)
+    subject, _, html = invoice_email_parts(inv, for_preview=True)
+    return html.replace("<title></title>", f"<title>{escape_html(subject)}</title>", 1)
+
+
+def escape_html(t):
+    from markupsafe import escape
+    return str(escape(t))
+
+
 def smtp_ready():
     c = smtp_config()
     return bool(c["host"] and c["from"])
 
 
-def send_email(to, subject, body, reply_to=None):
+def send_email(to, subject, body, reply_to=None, html=None, logo_path=None):
+    """Send an email. With html, it's sent as text + HTML (logo embedded, not loaded from the web)."""
     msg = EmailMessage()
     cfg = smtp_config()
     msg["From"] = cfg["from"]
     msg["To"] = to
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    sender_domain = (re.search(r"@([\w.-]+)", cfg["from"] or "") or [None, None])[1]
+    msg["Message-ID"] = make_msgid(domain=sender_domain)
     if reply_to:
         msg["Reply-To"] = reply_to
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
+        if logo_path and os.path.exists(logo_path):
+            ext = logo_path.rsplit(".", 1)[-1].lower()
+            with open(logo_path, "rb") as f:
+                msg.get_payload()[1].add_related(f.read(), maintype="image",
+                                                  subtype="jpeg" if ext in ("jpg", "jpeg") else ext, cid="<logo>")
     host = cfg["host"]
     port = int(cfg["port"] or 587)
     security = (cfg["security"] or "starttls").lower()
@@ -1172,8 +1218,7 @@ def invoice_email(iid):
         return redirect(url_for("invoice_view", iid=iid))
     s = settings()
     try:
-        send_email(to, fill_template(s["email_subject"], inv), fill_template(s["email_body"], inv),
-                   reply_to=s["business_email"] or None)
+        send_invoice_email(inv, to)
     except Exception as e:  # noqa: BLE001
         log.exception("Email failed")
         flash(f"Email failed: {e}", "error")
@@ -1885,8 +1930,7 @@ def _email_period_invoice(iid):
         return
     s = settings()
     try:
-        send_email(inv["client_email"], fill_template(s["email_subject"], inv), fill_template(s["email_body"], inv),
-                   reply_to=s["business_email"] or None)
+        send_invoice_email(inv, inv["client_email"])
         add_event(iid, f"Emailed automatically to {inv['client_email']}")
     except Exception as e:  # noqa: BLE001
         log.exception("Automatic email failed for %s", inv["number"])

@@ -1,0 +1,21 @@
+{{ message }}
+
+------------------------------------------------------------
+{{ s.business_name }} · Invoice {{ inv.number }}
+Issued {{ inv.issue_date|datefmt }} · Due {{ inv.due_date|datefmt }}
+------------------------------------------------------------
+{% for it in items %}{{ it.description }}{% if it.qty|float != 1 %} × {{ it.qty|qty }}{% endif %}: {{ it.amount_cents|money }}
+{% endfor %}{% if inv.discount_cents %}Discount: −{{ inv.discount_cents|money }}
+{% endif %}{% if inv.tax_cents %}{{ inv.tax_name or 'Tax' }} ({{ inv.tax_rate|qty }}%): {{ inv.tax_cents|money }}
+{% endif %}Total: {{ inv.total_cents|money }} {{ s.currency }}
+{% for p in payments %}Paid {{ p.paid_on|datefmt }}: −{{ p.amount_cents|money }}
+{% endfor %}{% if balance > 0 %}Amount due: {{ balance|money }}{% else %}Paid in full{% endif %}
+
+View {% if balance > 0 %}and pay {% endif %}online: {{ link }}
+{% if balance > 0 and s.etransfer_enabled == '1' %}Pay by Interac e-Transfer: send {{ balance|money }} to {{ etransfer }} and put {{ inv.number }} in the message.
+{% endif %}
+Questions? Reply to this email{% if s.business_email %} or write to {{ s.business_email }}{% endif %}.
+
+{{ s.business_name }}
+{{ s.business_address }}{% if s.business_phone %}
+{{ s.business_phone }}{% endif %}

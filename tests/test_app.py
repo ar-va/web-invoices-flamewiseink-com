@@ -421,7 +421,7 @@ assert 'data-desc="Advertising – monthly package"' in ac.get("/invoices/new").
 
 # -- monthly billing (Carrie = Advertising account "Artie")
 sent = []
-def fake_send(to, subject, body, reply_to=None):
+def fake_send(to, subject, body, reply_to=None, **kw):
     sent.append((to, subject, body))
 TODAY = A.today()
 start = TODAY.isoformat()
@@ -724,3 +724,36 @@ with A.app.app_context():
     A.save_settings({"helcim_fee": "0"})
 os.environ.pop("HELCIM_API_TOKEN")
 print("FEE SAVER + BANK PAYMENT TESTS PASSED")
+
+# --- invoice emails carry the full summary (HTML + text), proper headers, embedded logo ---
+TOK = csrf(get("/"))
+E = new_invoice(c, TOK, "Erin", price="150", tax="13")
+post(f"/invoices/{E}/status", {"action": "sent"})
+pv = get(f"/invoices/{E}/email-preview")
+assert row(E)["number"] in pv and "$169.50" in pv and "View and pay invoice" in pv and "Session" in pv
+assert "Pay by Interac e-Transfer" in pv and "<title>Invoice" in pv
+vw = get(f"/invoices/{E}")
+assert "Preview email" in vw and "Amount%20due%3A%20%24169.50" in vw            # mailto body includes the summary
+with A.app.app_context():
+    A.save_settings({"logo": "logo-email-test.png", "smtp_host": "smtp.example.com", "smtp_port": "465",
+                     "smtp_security": "ssl", "smtp_user": "team@flamewise.ca",
+                     "smtp_from": "Flame Wise Tattoo Collective <team@flamewise.ca>"})
+open(os.path.join(A.UPLOAD_DIR, "logo-email-test.png"), "wb").write(b"\x89PNG\r\n\x1a\nfake")
+class CaptureSMTP:
+    msgs = []
+    def __init__(self, host, port, timeout=None): pass
+    def login(self, u, p): pass
+    def send_message(self, m): CaptureSMTP.msgs.append(m)
+    def quit(self): pass
+with mock.patch.object(A.smtplib, "SMTP_SSL", CaptureSMTP):
+    post(f"/invoices/{E}/email", {"to": "erin@x.ca"})
+m = CaptureSMTP.msgs[-1]
+assert m["Date"] and m["Message-ID"].endswith("@flamewise.ca>"), (m["Date"], m["Message-ID"])
+plain = m.get_body(("plain",)).get_content()
+html = m.get_body(("html",)).get_content()
+assert row(E)["number"] in plain and "Amount due: $169.50" in plain and "/i/" in plain
+assert "$169.50" in html and 'src="cid:logo"' in html
+assert any(part.get("Content-ID") == "<logo>" for part in m.walk())
+with A.app.app_context():
+    A.save_settings({"logo": "", "smtp_host": ""})
+print("INVOICE EMAIL TESTS PASSED")

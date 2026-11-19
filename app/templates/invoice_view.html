@@ -40,7 +40,8 @@
           <div class="copy-row"><input type="email" name="to" value="{{ inv.client_email or '' }}" placeholder="client@email.com" required><button class="btn small">Email</button></div>
         </form>
         {% endif %}
-        <a class="btn ghost small" href="mailto:{{ inv.client_email or '' }}?subject={{ fill_template(s.email_subject, inv)|urlencode }}&body={{ fill_template(s.email_body, inv)|urlencode }}">Open in email app</a>
+        <a class="btn ghost small" href="{{ url_for('invoice_email_preview', iid=inv.id) }}" target="_blank" rel="noopener">Preview email</a>
+        <a class="btn ghost small" href="mailto:{{ inv.client_email or '' }}?subject={{ mail_subject|urlencode }}&body={{ mail_text|urlencode }}">Open in email app</a>
         <a class="btn ghost small" href="{{ link }}" target="_blank" rel="noopener">Preview client page</a>
         {% if 'send' in acts %}
         <form method="post" action="{{ url_for('invoice_status', iid=inv.id) }}">
