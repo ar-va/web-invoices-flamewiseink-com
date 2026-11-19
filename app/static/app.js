@@ -84,21 +84,7 @@ function initInvoiceForm() {
   ['discount', 'tax_rate', 'tax_name'].forEach(id => document.getElementById(id).addEventListener('input', recalc));
 
   const name = document.getElementById('client_name');
-  const saveRow = document.getElementById('save-client-row');
-  if (name) {
-    const sync = (fill) => {
-      const c = clients[name.value.trim()] ||
-        Object.entries(clients).find(([k]) => k.toLowerCase() === name.value.trim().toLowerCase())?.[1];
-      if (saveRow) saveRow.style.display = c || !name.value.trim() ? 'none' : '';
-      if (!c || !fill) return;
-      [['client_email', c.email], ['client_phone', c.phone], ['client_address', c.address]].forEach(([id, v]) => {
-        document.getElementById(id).value = v || '';
-      });
-    };
-    name.addEventListener('change', () => sync(true));
-    name.addEventListener('input', () => sync(false));
-    sync(false);
-  }
+  if (name) initClientPicker(name, clients);
   recalc();
 }
 
@@ -199,3 +185,65 @@ document.querySelectorAll('.et-picker').forEach(p => {
   sel.addEventListener('change', () => sync(true));
   sync(false);
 });
+
+// Client picker: searchable list of saved clients (name, email, phone); fills the contact fields
+function initClientPicker(input, clients) {
+  const list = document.getElementById('client-options');
+  const status = document.getElementById('client-status');
+  const saveRow = document.getElementById('save-client-row');
+  const all = Object.entries(clients).map(([n, c]) => ({ name: n, ...c }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  let shown = [], active = -1;
+  const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const exact = () => all.find(c => c.name.toLowerCase() === input.value.trim().toLowerCase());
+
+  function updateStatus() {
+    const typed = input.value.trim(), match = exact();
+    if (saveRow) saveRow.style.display = match || !typed ? 'none' : '';
+    status.className = 'small combo-status' + (match ? ' saved' : '');
+    status.textContent = match ? '✓ Saved client: details filled in from the client list'
+      : typed ? 'New client' : '';
+  }
+  function fill(c) {
+    input.value = c.name;
+    [['client_email', c.email], ['client_phone', c.phone], ['client_address', c.address]].forEach(([id, v]) => {
+      document.getElementById(id).value = v || '';
+    });
+    close(); updateStatus();
+  }
+  function render() {
+    const q = input.value.trim().toLowerCase();
+    const digits = q.replace(/\D/g, '');
+    shown = all.filter(c => !q || [c.name, c.email].some(v => (v || '').toLowerCase().includes(q))
+      || (digits.length >= 3 && (c.phone || '').replace(/\D/g, '').includes(digits))).slice(0, 8);
+    const rows = shown.map((c, i) => `<li role="option" id="client-opt-${i}" data-i="${i}" aria-selected="${i === active}">
+        <span class="name">${esc(c.name)}</span><span class="meta">${esc([c.email, c.phone].filter(Boolean).join(' · ') || 'No contact details yet')}</span></li>`);
+    if (q && /\p{L}/u.test(q) && !exact()) rows.push(`<li role="option" class="new" data-new="1" id="client-opt-new" aria-selected="${active === shown.length}">+ Add “${esc(input.value.trim())}” as a new client</li>`);
+    if (!rows.length) rows.push('<li class="empty">No saved clients yet. Type a name to add one.</li>');
+    list.innerHTML = rows.join('');
+    list.hidden = false; input.setAttribute('aria-expanded', 'true');
+    const cur = list.querySelector('[aria-selected="true"]');
+    input.setAttribute('aria-activedescendant', cur ? cur.id : '');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+  function close() { list.hidden = true; active = -1; input.setAttribute('aria-expanded', 'false'); }
+  function choose(li) {
+    if (!li) return;
+    if (li.dataset.new) { close(); updateStatus(); document.getElementById('client_email').focus(); return; }
+    if (li.dataset.i !== undefined) fill(shown[+li.dataset.i]);
+  }
+
+  input.addEventListener('focus', () => { active = -1; render(); });
+  input.addEventListener('input', () => { active = -1; render(); updateStatus(); });
+  input.addEventListener('keydown', e => {
+    const count = list.querySelectorAll('li[role=option]').length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (list.hidden) render(); active = Math.min(active + 1, count - 1); render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); render(); }
+    else if (e.key === 'Enter' && !list.hidden && active >= 0) { e.preventDefault(); choose(list.querySelectorAll('li[role=option]')[active]); }
+    else if (e.key === 'Escape') close();
+    else if (e.key === 'Tab') { const m = exact(); if (m && !document.getElementById('client_email').value) fill(m); close(); }
+  });
+  list.addEventListener('mousedown', e => { e.preventDefault(); choose(e.target.closest('li')); });
+  input.addEventListener('blur', () => setTimeout(close, 100));
+  updateStatus();
+}

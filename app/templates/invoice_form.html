@@ -8,14 +8,18 @@
   <div class="grid2">
     <section class="card">
       <h2>Client</h2>
-      <label>Name <input name="client_name" value="{{ inv.client_name }}" list="client-list" required id="client_name"
-             placeholder="Start typing to pick a saved client"></label>
-      <datalist id="client-list">{% for n in clients %}<option value="{{ n }}">{% endfor %}</datalist>
+      <label for="client_name" class="combo-label">Name</label>
+      <div class="combo">
+        <input name="client_name" value="{{ inv.client_name }}" required id="client_name" autocomplete="off"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="client-options"
+               placeholder="{{ 'Search saved clients or type a new name' if clients else 'Client name' }}">
+        <ul class="combo-list" id="client-options" role="listbox" hidden></ul>
+      </div>
+      <p class="small combo-status" id="client-status" aria-live="polite"></p>
       <label>Email <input type="email" name="client_email" value="{{ inv.client_email or '' }}" id="client_email"></label>
       <label>Phone <input name="client_phone" value="{{ inv.client_phone or '' }}" id="client_phone"></label>
       <label>Address <textarea name="client_address" rows="2" id="client_address">{{ inv.client_address or '' }}</textarea></label>
-      <label class="check" id="save-client-row"><input type="checkbox" name="save_client" value="1" {% if inv.save_client is not defined or inv.save_client %}checked{% endif %}> Add to the client list if new</label>
-      <a class="small muted" href="{{ url_for('clients_page') }}" target="_blank" rel="noopener">Client list</a>
+      <label class="check" id="save-client-row"><input type="checkbox" name="save_client" value="1" {% if inv.save_client is not defined or inv.save_client %}checked{% endif %}> Save this person to the client list</label>
     </section>
     <section class="card">
       <h2>Details</h2>
