@@ -51,6 +51,18 @@ jobs:
             ${{ steps.img.outputs.name }}:${{ steps.img.outputs.tag }}
             ${{ steps.img.outputs.name }}:latest
 
+      - name: Smoke test the built image (must start and answer /healthz)
+        env:
+          IMAGE: ${{ steps.img.outputs.name }}:${{ steps.img.outputs.tag }}
+        run: |
+          docker run -d --name smoke -p 8000:8000 -e ADMIN_EMAIL=ci@example.com -e ADMIN_PASSWORD=ci-password-123 "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/healthz; then echo " - healthy"; docker rm -f smoke; exit 0; fi
+            sleep 1
+          done
+          docker logs smoke
+          exit 1
+
       - name: Point the Portainer stack at the new image
         env:
           IMAGE: ${{ steps.img.outputs.name }}:${{ steps.img.outputs.tag }}

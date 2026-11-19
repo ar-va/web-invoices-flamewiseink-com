@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
-COPY app.py ./
+COPY *.py ./
 COPY templates ./templates
 COPY static ./static
 VOLUME /data
