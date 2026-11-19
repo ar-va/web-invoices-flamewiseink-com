@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="stats">
+  <div class="stat"><span>Outstanding</span><strong>{{ stats.outstanding|money }}</strong></div>
+  <a class="stat {% if stats.overdue %}warn{% endif %}" href="?f=overdue"><span>Overdue</span><strong>{{ stats.overdue }}</strong></a>
+  <a class="stat" href="?f=draft"><span>Drafts</span><strong>{{ stats.drafts }}</strong></a>
+  <div class="stat"><span>Received this month</span><strong>{{ stats.paid_month|money }}</strong></div>
+</div>
+
+<div class="toolbar">
+  <div class="tabs">
+    {% for key, label in [('open','Open'),('overdue','Overdue'),('draft','Drafts'),('sent','Sent'),('partial','Partly paid'),('paid','Paid'),('void','Void'),('all','All')] %}
+      <a href="?f={{ key }}{% if search %}&q={{ search|urlencode }}{% endif %}" class="{% if f == key %}active{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <form class="search" method="get">
+    <input type="hidden" name="f" value="all">
+    <input type="search" name="q" value="{{ search }}" placeholder="Search number, client, email">
+  </form>
+  {% if current_user().role in ('admin','staff') %}<a class="muted small" href="{{ url_for('export_csv') }}">Export CSV</a>{% endif %}
+</div>
+
+{% if invoices %}
+<table class="list">
+  <thead><tr><th>Number</th><th>Client</th><th>Issued</th><th>Due</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th>{% if current_user().role != 'artist' %}<th>By</th>{% endif %}</tr></thead>
+  <tbody>
+  {% for i in invoices %}
+    {% set st = display_status(i) %}
+    <tr onclick="location.href='{{ url_for('invoice_view', iid=i.id) }}'">
+      <td><a href="{{ url_for('invoice_view', iid=i.id) }}">{{ i.number }}</a></td>
+      <td>{{ i.client_name }}</td>
+      <td>{{ i.issue_date|datefmt }}</td>
+      <td>{{ i.due_date|datefmt }}</td>
+      <td class="r">{{ i.total_cents|money }}</td>
+      <td class="r">{{ (i.total_cents - i.paid_cents)|money if i.status != 'void' else '—' }}</td>
+      <td><span class="badge {{ st }}">{{ st }}</span></td>
+      {% if current_user().role != 'artist' %}<td class="muted">{{ i.artist_name or '' }}</td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty card">
+  <p>No invoices here.</p>
+  <a class="btn" href="{{ url_for('invoice_new') }}">+ New invoice</a>
+</div>
+{% endif %}
+{% endblock %}

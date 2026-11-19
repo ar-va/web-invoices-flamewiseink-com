@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ 'New invoice' if is_new else 'Edit ' ~ inv.number }}{% endblock %}
+{% block content %}
+<h1>{{ 'New invoice' if is_new else 'Edit invoice ' ~ inv.number }}</h1>
+<form method="post" id="invoice-form" class="invoice-form" autocomplete="off">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Client</h2>
+      <label>Name <input name="client_name" value="{{ inv.client_name }}" list="client-list" required id="client_name"></label>
+      <datalist id="client-list">{% for n in clients %}<option value="{{ n }}">{% endfor %}</datalist>
+      <label>Email <input type="email" name="client_email" value="{{ inv.client_email or '' }}" id="client_email"></label>
+      <label>Phone <input name="client_phone" value="{{ inv.client_phone or '' }}" id="client_phone"></label>
+      <label>Address <textarea name="client_address" rows="2" id="client_address">{{ inv.client_address or '' }}</textarea></label>
+    </section>
+    <section class="card">
+      <h2>Details</h2>
+      {% if not is_new %}<label>Invoice number <input name="number" value="{{ inv.number }}"></label>{% else %}<p class="muted small">Number is assigned automatically ({{ s.invoice_prefix }}{{ s.next_number }}).</p>{% endif %}
+      <div class="grid2 tight">
+        <label>Issue date <input type="date" name="issue_date" value="{{ inv.issue_date }}" required></label>
+        <label>Due date <input type="date" name="due_date" value="{{ inv.due_date }}" required></label>
+      </div>
+      <div class="grid2 tight">
+        <label>Tax name <input name="tax_name" value="{{ inv.tax_name or '' }}" id="tax_name"></label>
+        <label>Tax rate % <input name="tax_rate" value="{{ inv.tax_rate }}" inputmode="decimal" id="tax_rate"></label>
+      </div>
+      <label>e-Transfer email for this invoice
+        <input type="email" name="etransfer_email" value="{{ inv.etransfer_email or '' }}" list="etransfer-list" placeholder="{{ s.etransfer_email }}">
+      </label>
+      <datalist id="etransfer-list">{% for e in etransfer_email_options() %}<option value="{{ e }}">{% endfor %}</datalist>
+      <p class="small muted">Pick from the list or type any email. Blank uses the default ({{ s.etransfer_email }}).</p>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Line items</h2>
+    {% if quick_items %}
+    <div class="quick">
+      <span class="muted small">Quick add:</span>
+      {% for q in quick_items %}<button type="button" class="chip" data-desc="{{ q.description }}" data-price="{{ q.price }}">{{ q.description }}{% if q.price %} · ${{ q.price }}{% endif %}</button>{% endfor %}
+    </div>
+    {% endif %}
+    <table class="items-edit">
+      <thead><tr><th>Description</th><th class="w-qty">Qty</th><th class="w-price">Price</th><th class="w-tax">Tax</th><th class="w-amt r">Amount</th><th></th></tr></thead>
+      <tbody id="items">
+      {% for it in items %}
+        <tr class="item-row">
+          <td><textarea name="item_desc" rows="1" placeholder="e.g. Tattoo session – forearm, 3 hrs">{{ it.description }}</textarea></td>
+          <td><input name="item_qty" value="{{ it.qty }}" inputmode="decimal"></td>
+          <td><input name="item_price" value="{{ it.price }}" inputmode="decimal" placeholder="0.00"></td>
+          <td class="c"><input type="checkbox" class="tax-box" {% if it.taxable %}checked{% endif %}><input type="hidden" name="item_taxable" value="{{ '1' if it.taxable else '0' }}"></td>
+          <td class="r amt">$0.00</td>
+          <td><button type="button" class="link remove" title="Remove line">✕</button></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <button type="button" class="btn ghost" id="add-item">+ Add line</button>
+
+    <div class="totals-edit">
+      <div><span>Subtotal</span><span id="t-sub">$0.00</span></div>
+      <div><span>Discount $</span><input name="discount" value="{{ inv.discount or '' }}" inputmode="decimal" placeholder="0.00" id="discount"></div>
+      <div><span id="t-tax-label">Tax</span><span id="t-tax">$0.00</span></div>
+      <div class="grand"><span>Total</span><span id="t-total">$0.00</span></div>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Notes <span class="muted small">(shown on invoice)</span></h2>
+      <textarea name="notes" rows="3">{{ inv.notes or '' }}</textarea>
+    </section>
+    <section class="card">
+      <h2>Terms <span class="muted small">(shown at bottom)</span></h2>
+      <textarea name="terms" rows="3">{{ inv.terms or '' }}</textarea>
+    </section>
+  </div>
+
+  <div class="actions">
+    <button class="btn">{{ 'Create invoice' if is_new else 'Save changes' }}</button>
+    <a class="btn ghost" href="{{ url_for('dashboard') if is_new else url_for('invoice_view', iid=inv.id) }}">Cancel</a>
+  </div>
+</form>
+
+<template id="row-template">
+  <tr class="item-row">
+    <td><textarea name="item_desc" rows="1"></textarea></td>
+    <td><input name="item_qty" value="1" inputmode="decimal"></td>
+    <td><input name="item_price" inputmode="decimal" placeholder="0.00"></td>
+    <td class="c"><input type="checkbox" class="tax-box" checked><input type="hidden" name="item_taxable" value="1"></td>
+    <td class="r amt">$0.00</td>
+    <td><button type="button" class="link remove" title="Remove line">✕</button></td>
+  </tr>
+</template>
+<script id="clients-data" type="application/json">{{ clients|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script>initInvoiceForm();</script>{% endblock %}

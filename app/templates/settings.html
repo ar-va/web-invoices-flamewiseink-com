@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<form method="post" enctype="multipart/form-data" class="settings">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+
+  <section class="card">
+    <h2>Business</h2>
+    <div class="grid2">
+      <label>Business name <input name="business_name" value="{{ s.business_name }}" required></label>
+      <label>Email on invoices <input name="business_email" value="{{ s.business_email }}"></label>
+      <label>Phone <input name="business_phone" value="{{ s.business_phone }}"></label>
+      <label>Website <input name="business_website" value="{{ s.business_website }}"></label>
+      <label>Address <textarea name="business_address" rows="3">{{ s.business_address }}</textarea></label>
+      <div class="grid2 tight">
+        <label>Tax ID label <input name="tax_number_label" value="{{ s.tax_number_label }}"></label>
+        <label>Tax ID (e.g. HST #) <input name="tax_number" value="{{ s.tax_number }}"></label>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Look</h2>
+    <div class="grid2">
+      <div>
+        <label>Logo (PNG / JPG / WEBP) <input type="file" name="logo" accept=".png,.jpg,.jpeg,.webp"></label>
+        {% if s.logo %}<div class="logo-preview"><img src="{{ url_for('uploads', name=s.logo) }}" alt=""><label class="check"><input type="checkbox" name="remove_logo"> Remove logo</label></div>{% endif %}
+      </div>
+      <div>
+        <label>Accent color <span class="color-row"><input type="color" id="accent_picker" value="{{ s.accent_color }}"><input name="accent_color" id="accent_color" value="{{ s.accent_color }}"></span></label>
+        <label>Document title <input name="invoice_title" value="{{ s.invoice_title }}"></label>
+        <label class="check"><input type="checkbox" name="show_artist" {% if s.show_artist == '1' %}checked{% endif %}> Show the artist's name on invoices</label>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Invoice defaults</h2>
+    <div class="grid3">
+      <label>Number prefix <input name="invoice_prefix" value="{{ s.invoice_prefix }}"></label>
+      <label>Next number <input name="next_number" value="{{ s.next_number }}" inputmode="numeric"></label>
+      <label>Due in (days) <input name="default_due_days" value="{{ s.default_due_days }}" inputmode="numeric"></label>
+      <label>Tax name <input name="tax_name" value="{{ s.tax_name }}"></label>
+      <label>Tax rate % <input name="tax_rate" value="{{ s.tax_rate }}" inputmode="decimal"></label>
+      <label>Currency <select name="currency">{% for c in ['CAD','USD'] %}<option {% if s.currency == c %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></label>
+    </div>
+    <div class="grid2">
+      <label>Default notes <textarea name="default_notes" rows="3">{{ s.default_notes }}</textarea></label>
+      <label>Default terms <textarea name="default_terms" rows="3" placeholder="e.g. Deposits are non-refundable.">{{ s.default_terms }}</textarea></label>
+    </div>
+    <label>Quick-add items <span class="muted small">— one per line: <code>Description | price</code></span>
+      <textarea name="quick_items" rows="4" placeholder="Tattoo session (hourly) | 150.00&#10;Deposit | 100.00&#10;Touch-up | 0.00">{{ s.quick_items }}</textarea></label>
+  </section>
+
+  <section class="card">
+    <h2>Payments</h2>
+    <div class="grid2">
+      <div>
+        <label class="check"><input type="checkbox" name="etransfer_enabled" {% if s.etransfer_enabled == '1' %}checked{% endif %}> Show Interac e-Transfer instructions</label>
+        <label>Default e-Transfer email <input name="etransfer_email" value="{{ s.etransfer_email }}"></label>
+        <label>Other e-Transfer emails <span class="muted small">— one per line, offered on each invoice</span>
+          <textarea name="etransfer_emails" rows="3" placeholder="artist@example.com&#10;deposits@flamewiseink.ca">{{ s.etransfer_emails }}</textarea></label>
+        <label>Instructions <textarea name="etransfer_instructions" rows="4">{{ s.etransfer_instructions }}</textarea></label>
+        <p class="small muted">Placeholders: {amount} {email} {number} {balance} {total} {due_date} {client} {business}</p>
+      </div>
+      <div>
+        <label class="check"><input type="checkbox" name="helcim_enabled" {% if s.helcim_enabled == '1' %}checked{% endif %}> Offer card payments with Helcim</label>
+        <label class="check"><input type="checkbox" name="helcim_fee" {% if s.helcim_fee == '1' %}checked{% endif %}> Pass Helcim's convenience fee to the client</label>
+        <p class="small">API token:
+          {% if helcim_token %}<span class="badge paid">connected</span>{% else %}<span class="badge overdue">not set</span> — add <code>HELCIM_API_TOKEN</code> to the stack. Card button stays hidden until then.{% endif %}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Email message</h2>
+    <p class="small">Sending from the app:
+      {% if smtp %}<span class="badge paid">SMTP set up</span>{% else %}<span class="badge draft">not set up</span> — "Open in email app" still works.{% endif %}</p>
+    <label>Subject <input name="email_subject" value="{{ s.email_subject }}"></label>
+    <label>Body <textarea name="email_body" rows="8">{{ s.email_body }}</textarea></label>
+    <p class="small muted">Placeholders: {client} {number} {amount} {balance} {total} {due_date} {link} {email} {business}</p>
+  </section>
+
+  <div class="actions"><button class="btn">Save settings</button></div>
+</form>
+{% endblock %}
+{% block scripts %}<script>
+const p=document.getElementById('accent_picker'),t=document.getElementById('accent_color');
+p.addEventListener('input',()=>t.value=p.value);t.addEventListener('input',()=>{if(/^#[0-9a-f]{6}$/i.test(t.value))p.value=t.value});
+</script>{% endblock %}

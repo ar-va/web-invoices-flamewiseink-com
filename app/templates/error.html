@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ code }}{% endblock %}
+{% block main_class %}narrow{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{% if code == 404 %}Not found{% elif code == 403 %}No access{% else %}Something went wrong{% endif %}</h1>
+  <p>{% if code == 404 %}This page or invoice doesn't exist.{% elif code == 403 %}Your account can't open this.{% else %}{{ message }}{% endif %}</p>
+  {% if current_user() %}<a class="btn" href="{{ url_for('dashboard') }}">Back to invoices</a>{% endif %}
+</div>
+{% endblock %}

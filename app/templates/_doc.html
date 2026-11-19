@@ -1,0 +1,65 @@
+{# The printable invoice document. Needs: inv, items, payments, s #}
+{% set st = display_status(inv) %}
+{% set balance = inv.total_cents - inv.paid_cents %}
+<article class="doc">
+  {% if st in ('paid', 'void', 'overdue') %}<div class="stamp {{ st }}">{{ st }}</div>{% endif %}
+  <header class="doc-head">
+    <div class="from">
+      {% if s.logo %}<img class="doc-logo" src="{{ url_for('uploads', name=s.logo) }}" alt="{{ s.business_name }}">{% endif %}
+      <div class="biz-name">{{ s.business_name }}</div>
+      <div class="pre">{{ s.business_address }}</div>
+      {% if s.business_phone %}<div>{{ s.business_phone }}</div>{% endif %}
+      {% if s.business_email %}<div>{{ s.business_email }}</div>{% endif %}
+      {% if s.business_website %}<div>{{ s.business_website }}</div>{% endif %}
+      {% if s.tax_number %}<div>{{ s.tax_number_label }} {{ s.tax_number }}</div>{% endif %}
+    </div>
+    <div class="meta">
+      <h1 class="doc-title">{{ s.invoice_title }}</h1>
+      <table>
+        <tr><th>Invoice #</th><td>{{ inv.number }}</td></tr>
+        <tr><th>Issued</th><td>{{ inv.issue_date|datefmt }}</td></tr>
+        <tr><th>Due</th><td>{{ inv.due_date|datefmt }}</td></tr>
+        {% if s.show_artist == '1' and inv.artist_name %}<tr><th>Artist</th><td>{{ inv.artist_name }}</td></tr>{% endif %}
+        <tr class="due-row"><th>Balance due</th><td>{{ (balance if balance > 0 else 0)|money }}</td></tr>
+      </table>
+    </div>
+  </header>
+
+  <section class="bill-to">
+    <div class="label">Bill to</div>
+    <div class="biz-name">{{ inv.client_name }}</div>
+    {% if inv.client_address %}<div class="pre">{{ inv.client_address }}</div>{% endif %}
+    {% if inv.client_email %}<div>{{ inv.client_email }}</div>{% endif %}
+    {% if inv.client_phone %}<div>{{ inv.client_phone }}</div>{% endif %}
+  </section>
+
+  <table class="lines">
+    <thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Amount</th></tr></thead>
+    <tbody>
+    {% for it in items %}
+      <tr><td class="pre">{{ it.description }}{% if not it.taxable and inv.tax_cents %} <span class="muted small">(no {{ inv.tax_name or 'tax' }})</span>{% endif %}</td>
+          <td class="r">{{ it.qty|qty }}</td><td class="r">{{ it.unit_cents|money }}</td><td class="r">{{ it.amount_cents|money }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="doc-totals">
+    <div><span>Subtotal</span><span>{{ inv.subtotal_cents|money }}</span></div>
+    {% if inv.discount_cents %}<div><span>Discount</span><span>-{{ inv.discount_cents|money }}</span></div>{% endif %}
+    {% if inv.tax_cents or inv.tax_rate|float > 0 %}<div><span>{{ inv.tax_name or 'Tax' }} ({{ inv.tax_rate|qty }}%)</span><span>{{ inv.tax_cents|money }}</span></div>{% endif %}
+    <div class="grand"><span>Total {{ s.currency }}</span><span>{{ inv.total_cents|money }}</span></div>
+    {% for p in payments %}<div class="muted"><span>Paid {{ p.paid_on|datefmt }} · {{ p.method }}</span><span>-{{ p.amount_cents|money }}</span></div>{% endfor %}
+    {% if payments %}<div class="grand"><span>Balance due</span><span>{{ (balance if balance > 0 else 0)|money }}</span></div>{% endif %}
+  </div>
+
+  {% if balance > 0 and inv.status != 'void' and s.etransfer_enabled == '1' %}
+  <section class="howto">
+    <div class="label">How to pay</div>
+    <div class="pre">{{ fill_template(s.etransfer_instructions, inv) }}</div>
+    {% if helcim_ready() %}<div class="small muted">Pay by credit/debit card online: {{ public_url(inv) }}</div>{% endif %}
+  </section>
+  {% endif %}
+
+  {% if inv.notes %}<section class="notes"><div class="pre">{{ inv.notes }}</div></section>{% endif %}
+  {% if inv.terms %}<footer class="terms pre">{{ inv.terms }}</footer>{% endif %}
+</article>

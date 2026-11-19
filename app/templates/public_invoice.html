@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Invoice {{ inv.number }}{% endblock %}
+{% block body_class %}public{% endblock %}
+{% block head %}{% if helcim_ready() %}<script src="https://secure.helcim.app/helcim-pay/services/start.js"></script>{% endif %}{% endblock %}
+{% block content %}
+{% set balance = inv.total_cents - inv.paid_cents %}
+{% if preview %}<div class="flash info no-print">Preview — this is what your client sees{% if inv.status == 'draft' %}. Clients can't open drafts until you mark it sent{% endif %}. <a href="{{ url_for('invoice_view', iid=inv.id) }}">Back to invoice</a></div>{% endif %}
+{% if just_paid %}<div class="flash ok no-print">Payment received — thank you! A record is shown below.</div>{% endif %}
+
+{% if inv.status == 'void' %}
+  <div class="flash error">This invoice has been cancelled. No payment is needed.</div>
+{% elif balance > 0 %}
+<section class="pay-panel no-print">
+  <div class="pay-amount"><span>Amount due</span><strong>{{ balance|money }}</strong><span class="muted small">Due {{ inv.due_date|datefmt }}</span></div>
+  <div class="pay-options">
+    {% if s.etransfer_enabled == '1' %}
+    <div class="pay-option">
+      <h2>Interac e-Transfer <span class="pill">Preferred</span></h2>
+      <div class="copy-row"><input readonly value="{{ etransfer_email_for(inv) }}" id="et-email"><button class="btn small" data-copy="#et-email">Copy email</button></div>
+      <div class="copy-row"><input readonly value="{{ inv.number }}" id="et-ref"><button class="btn small ghost" data-copy="#et-ref">Copy invoice #</button></div>
+      <p class="small pre">{{ fill_template(s.etransfer_instructions, inv) }}</p>
+    </div>
+    {% endif %}
+    {% if helcim_ready() %}
+    <div class="pay-option">
+      <h2>Credit or debit card</h2>
+      <p class="small muted">Secure checkout by Helcim.{% if s.helcim_fee == '1' %} A card processing fee may be added.{% endif %}</p>
+      <button class="btn full" id="pay-card"
+        data-start="{{ url_for('helcim_start', token=inv.token) }}"
+        data-confirm="{{ url_for('helcim_confirm', token=inv.token) }}">Pay {{ balance|money }} by card</button>
+      <p class="small" id="pay-status" role="status"></p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% else %}
+  <div class="flash ok">Paid in full — thank you!</div>
+{% endif %}
+
+<div class="public-tools no-print"><button class="link" onclick="window.print()">Print or save as PDF</button></div>
+<div class="paper">{% include "_doc.html" %}</div>
+{% endblock %}
+{% block scripts %}{% if helcim_ready() %}<script>initHelcimPay();</script>{% endif %}{% endblock %}

@@ -1,0 +1,36 @@
+# Portainer stack, deployed from this Git repo.
+# The image line below is updated automatically by GitHub Actions after every code change.
+# Set the ${...} values in Portainer -> Stacks -> invoices -> Environment variables.
+services:
+  invoices:
+    # set by GitHub Actions - do not edit by hand
+    image: ghcr.io/ar-va/flamewise-invoices:latest
+    container_name: invoices
+    restart: unless-stopped
+    ports:
+      - "8095:8000"
+    volumes:
+      - invoices_data:/data
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"   # Portainer handles updates
+    environment:
+      TZ: America/Toronto
+      BASE_URL: ${BASE_URL:-https://invoices.flamewiseink.ca}
+      SECURE_COOKIES: ${SECURE_COOKIES:-false}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      HELCIM_API_TOKEN: ${HELCIM_API_TOKEN:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  invoices_data:
