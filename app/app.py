@@ -42,7 +42,6 @@ DB_PATH = os.path.join(DATA_DIR, "invoices.db")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 HELCIM_API = os.environ.get("HELCIM_API_URL", "https://api.helcim.com/v2").rstrip("/")
-HELCIM_TOKEN = os.environ.get("HELCIM_API_TOKEN", "").strip()
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
 ROLES = {
@@ -107,6 +106,11 @@ DEFAULTS = {
     "quick_items": "",
     "etransfer_enabled": "1",
     "etransfer_email": "pay@flamewiseink.ca",
+    "smtp_host": "",
+    "smtp_port": "465",
+    "smtp_security": "ssl",
+    "smtp_user": "",
+    "smtp_from": "",
     "etransfer_emails": "",
     "etransfer_instructions": (
         "Send an Interac e-Transfer for {amount} to {email}.\n"
@@ -282,9 +286,32 @@ def x(sql, args=()):
 def settings():
     if "settings" not in g:
         s = dict(DEFAULTS)
-        s.update({r["key"]: r["value"] for r in q("SELECT key, value FROM settings")})
+        s.update({r["key"]: r["value"] for r in q("SELECT key, value FROM settings") if not r["key"].startswith("secret_")})
         g.settings = s
     return g.settings
+
+
+def secret(key):
+    """Passwords/tokens saved in Settings. Kept out of settings() so no page can print them."""
+    row = q("SELECT value FROM settings WHERE key=?", (f"secret_{key}",), one=True)
+    return (row["value"] if row else "") or ""
+
+
+def helcim_token():
+    """Portainer's HELCIM_API_TOKEN wins if set; otherwise the token saved in Settings."""
+    return os.environ.get("HELCIM_API_TOKEN", "").strip() or secret("helcim_token").strip()
+
+
+def smtp_config():
+    """Email sending settings: from Portainer (SMTP_HOST set) or from the Settings page."""
+    if os.environ.get("SMTP_HOST", "").strip():
+        e = os.environ.get
+        return {"host": e("SMTP_HOST", "").strip(), "port": e("SMTP_PORT", "587"), "security": e("SMTP_SECURITY", "starttls"),
+                "user": e("SMTP_USER", ""), "password": e("SMTP_PASSWORD", ""), "from": e("SMTP_FROM", ""),
+                "source": "portainer"}
+    st = settings()
+    return {"host": st["smtp_host"], "port": st["smtp_port"] or "465", "security": st["smtp_security"] or "ssl",
+            "user": st["smtp_user"], "password": secret("smtp_password"), "from": st["smtp_from"], "source": "app"}
 
 
 def save_settings(values):
@@ -1068,20 +1095,22 @@ def invoice_delete(iid):
 
 
 def smtp_ready():
-    return bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_FROM"))
+    c = smtp_config()
+    return bool(c["host"] and c["from"])
 
 
 def send_email(to, subject, body, reply_to=None):
     msg = EmailMessage()
-    msg["From"] = os.environ["SMTP_FROM"]
+    cfg = smtp_config()
+    msg["From"] = cfg["from"]
     msg["To"] = to
     msg["Subject"] = subject
     if reply_to:
         msg["Reply-To"] = reply_to
     msg.set_content(body)
-    host = os.environ["SMTP_HOST"]
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    security = os.environ.get("SMTP_SECURITY", "starttls").lower()
+    host = cfg["host"]
+    port = int(cfg["port"] or 587)
+    security = (cfg["security"] or "starttls").lower()
     if security == "ssl":
         server = smtplib.SMTP_SSL(host, port, timeout=20)
     else:
@@ -1089,8 +1118,8 @@ def send_email(to, subject, body, reply_to=None):
         if security == "starttls":
             server.starttls()
     try:
-        if os.environ.get("SMTP_USER"):
-            server.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
+        if cfg["user"]:
+            server.login(cfg["user"], cfg["password"])
         server.send_message(msg)
     finally:
         server.quit()
@@ -1140,7 +1169,7 @@ def public_invoice_or_404(token):
 
 
 def helcim_ready():
-    return bool(HELCIM_TOKEN) and settings()["helcim_enabled"] == "1"
+    return bool(helcim_token()) and settings()["helcim_enabled"] == "1"
 
 
 app.jinja_env.globals["helcim_ready"] = helcim_ready
@@ -1161,7 +1190,7 @@ def public_invoice(token):
 
 
 def helcim_headers():
-    return {"accept": "application/json", "content-type": "application/json", "api-token": HELCIM_TOKEN}
+    return {"accept": "application/json", "content-type": "application/json", "api-token": helcim_token()}
 
 
 @app.post("/i/<token>/helcim/start")
@@ -1799,7 +1828,8 @@ def uploads(name):
 TEXT_SETTINGS = ["business_name", "business_address", "business_email", "business_phone", "business_website",
                  "tax_number_label", "tax_number", "accent_color", "invoice_title", "invoice_prefix", "next_number",
                  "default_due_days", "tax_name", "tax_rate", "currency", "default_notes", "default_terms",
-                 "creator_label", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body"]
+                 "creator_label", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body",
+                 "smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_from"]
 BOOL_SETTINGS = ["show_artist", "etransfer_enabled", "helcim_enabled", "helcim_fee"]
 
 
@@ -1823,6 +1853,16 @@ def settings_page():
             errors.append(str(e))
         if vals["currency"] not in ("CAD", "USD"):
             errors.append("Currency must be CAD or USD (Helcim supports these).")
+        if vals["smtp_port"] and not vals["smtp_port"].isdigit():
+            errors.append("Email port must be a number, e.g. 465.")
+        if vals["smtp_security"] not in ("ssl", "starttls", "none"):
+            vals["smtp_security"] = "ssl"
+        for key in ("helcim_token", "smtp_password"):       # blank keeps what's saved
+            new = request.form.get(key, "").strip()
+            if request.form.get(f"remove_{key}"):
+                vals[f"secret_{key}"] = ""
+            elif new:
+                vals[f"secret_{key}"] = new
         logo = request.files.get("logo")
         if logo and logo.filename:
             ext = logo.filename.rsplit(".", 1)[-1].lower() if "." in logo.filename else ""
@@ -1837,12 +1877,37 @@ def settings_page():
         if errors:
             for e in errors:
                 flash(e, "error")
-            return render_template("settings.html", s=dict(settings(), **vals), helcim_token=bool(HELCIM_TOKEN),
-                                   smtp=smtp_ready()), 400
+            return render_template("settings.html", **_settings_context(dict(settings(), **vals))), 400
         save_settings(vals)
         flash("Settings saved.", "ok")
         return redirect(url_for("settings_page"))
-    return render_template("settings.html", s=settings(), helcim_token=bool(HELCIM_TOKEN), smtp=smtp_ready())
+    return render_template("settings.html", **_settings_context(settings()))
+
+
+def _settings_context(s_):
+    return dict(s=s_, helcim_token=bool(helcim_token()), smtp=smtp_ready(),
+                helcim_source="portainer" if os.environ.get("HELCIM_API_TOKEN", "").strip() else "app",
+                helcim_saved=bool(secret("helcim_token")), smtp_source=smtp_config()["source"],
+                smtp_password_saved=bool(secret("smtp_password")))
+
+
+@app.post("/settings/test-email")
+@login_required("admin")
+def settings_test_email():
+    to = request.form.get("to", "").strip() or current_user()["email"]
+    if not smtp_ready():
+        flash("Fill in the email server and From address, save, then send a test.", "error")
+        return redirect(url_for("settings_page") + "#email")
+    try:
+        send_email(to, f"Test email from {settings()['business_name']} invoices",
+                   "Email sending works. Invoices and monthly billing emails will be sent from this address.",
+                   reply_to=settings()["business_email"] or None)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Test email failed")
+        flash(f"Test email failed: {e}", "error")
+        return redirect(url_for("settings_page") + "#email")
+    flash(f"Test email sent to {to}. Check that inbox (and spam).", "ok")
+    return redirect(url_for("settings_page") + "#email")
 
 
 @app.route("/users", methods=["GET", "POST"])

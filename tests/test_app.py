@@ -544,3 +544,51 @@ mc.post(f"/invoices/{S}/share", data={"_csrf": t3})
 assert ac.get(f"/invoices/{S}").status_code == 403
 assert any("Stopped sharing with Artie by Mona" in e for e in events(S))
 print("SHARING TESTS PASSED")
+
+# --- Helcim token and email settings saved in the app (survive redeploys) ---
+os.environ.pop("HELCIM_API_TOKEN", None)
+with A.app.app_context():
+    assert A.helcim_token() == ""
+    assert not A.smtp_ready()
+base = {"business_name": "Flame Wise Tattoo Collective", "accent_color": "#df620c", "invoice_title": "Invoice",
+        "invoice_prefix": "FW-", "next_number": "3000", "default_due_days": "14", "tax_name": "HST", "tax_rate": "13",
+        "currency": "CAD", "etransfer_enabled": "on", "etransfer_email": "pay@flamewiseink.ca", "helcim_enabled": "on",
+        "etransfer_instructions": A.DEFAULTS["etransfer_instructions"], "email_subject": A.DEFAULTS["email_subject"],
+        "email_body": A.DEFAULTS["email_body"], "business_email": "team@flamewise.ca",
+        "smtp_host": "giowm1301.siteground.biz", "smtp_port": "465", "smtp_security": "ssl",
+        "smtp_user": "team@flamewise.ca", "smtp_from": "Flame Wise Tattoo Collective <team@flamewise.ca>"}
+post("/settings", dict(base, helcim_token="tok-123", smtp_password="pw-1"))
+with A.app.app_context():
+    assert A.helcim_token() == "tok-123" and A.helcim_ready()
+    cfg = A.smtp_config()
+    assert cfg["host"] == "giowm1301.siteground.biz" and cfg["password"] == "pw-1" and cfg["source"] == "app" and A.smtp_ready()
+    assert not any(k.startswith("secret_") for k in A.settings())           # secrets never reach templates
+sp = get("/settings")
+assert "tok-123" not in sp and "pw-1" not in sp and "Saved. Paste a new one" in sp and "Saved. Type a new one" in sp
+# saving again with blank secret fields keeps them
+post("/settings", base)
+with A.app.app_context():
+    assert A.helcim_token() == "tok-123" and A.smtp_config()["password"] == "pw-1"
+# Helcim script loads on the client page once a token is saved
+assert "secure.helcim.app/helcim-pay/services/start.js" in anon.get(f"/i/{Htok}").get_data(as_text=True)
+# test email uses saved settings via smtplib
+class FakeSMTP:
+    sent = []
+    def __init__(self, host, port, timeout=None): self.host, self.port = host, port
+    def login(self, u, p): FakeSMTP.login_with = (u, p)
+    def send_message(self, m): FakeSMTP.sent.append((self.host, self.port, m["To"], m["From"]))
+    def quit(self): pass
+with mock.patch.object(A.smtplib, "SMTP_SSL", FakeSMTP):
+    post("/settings/test-email", {"to": "me@x.ca"})
+assert FakeSMTP.sent == [("giowm1301.siteground.biz", 465, "me@x.ca", "Flame Wise Tattoo Collective <team@flamewise.ca>")], FakeSMTP.sent
+assert FakeSMTP.login_with == ("team@flamewise.ca", "pw-1")
+# Portainer values still override when present
+os.environ["HELCIM_API_TOKEN"] = "env-tok"
+with A.app.app_context():
+    assert A.helcim_token() == "env-tok"
+os.environ.pop("HELCIM_API_TOKEN")
+# remove saved token
+post("/settings", dict(base, remove_helcim_token="on"))
+with A.app.app_context():
+    assert A.helcim_token() == ""
+print("SAVED INTEGRATION SETTINGS TESTS PASSED")

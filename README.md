@@ -43,13 +43,18 @@ Secrets (passwords, Helcim token) live only in Portainer's environment variables
 
 ## Turn on Helcim card payments
 
-1. Helcim → All Tools → Integrations → API Access Configurations → New.
-2. Give it access to process transactions (needed for HelcimPay.js) and read transactions (used to verify payments). Copy the API token.
-3. Paste it into `HELCIM_API_TOKEN` in the Portainer stack → Update the stack.
-4. Settings page should show **API token: connected**.
-5. Test: make a $1.00 invoice to yourself → Mark as sent → open the client link → Pay by card → it should flip to **Paid**. Refund it in Helcim afterwards.
+1. Helcim → All Tools → Integrations → API Access Configurations → New API Access.
+2. Tick "I will use this token for a checkout integration" and enter `https://invoices.flamewiseink.com`.
+3. Access: General **Read**, Settings **No Access**, Transaction Processing **Admin**. Create, copy the token.
+4. In the app: Settings → Payments → paste into **Helcim API token** → Save settings. It shows **connected**.
+5. Test with a $1.00 invoice to yourself, then refund it in Helcim.
 
-Optional: Settings → "Pass Helcim's convenience fee to the client" applies Helcim's convenience fee rate to card checkouts (the fee must also be set up in your Helcim account). The invoice is credited the invoice amount; the extra fee is noted on the payment.
+## Turn on email sending
+
+Settings → **Email sending** → fill in the server, port, security, username, password and "Send as" → Save settings → **Send test**.
+For SiteGround: server from Site Tools → Email → Accounts → Mail Configuration → Manual Settings, port 465, SSL.
+
+These are saved with your invoices (in the data volume), so redeploys don't touch them. `HELCIM_API_TOKEN` / `SMTP_*` in Portainer still work and override the Settings page if set.
 
 ## Daily use
 

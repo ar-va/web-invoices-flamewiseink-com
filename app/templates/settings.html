@@ -67,16 +67,41 @@
       <div>
         <label class="check"><input type="checkbox" name="helcim_enabled" {% if s.helcim_enabled == '1' %}checked{% endif %}> Offer card payments with Helcim</label>
         <label class="check"><input type="checkbox" name="helcim_fee" {% if s.helcim_fee == '1' %}checked{% endif %}> Pass Helcim's convenience fee to the client</label>
-        <p class="small">API token:
-          {% if helcim_token %}<span class="badge paid">connected</span>{% else %}<span class="badge overdue">not set</span> — add <code>HELCIM_API_TOKEN</code> to the stack. Card button stays hidden until then.{% endif %}</p>
+        <p class="small">Card payments:
+          {% if helcim_token %}<span class="badge paid">connected</span>{% else %}<span class="badge overdue">no token</span> The card button stays hidden until a token is saved.{% endif %}</p>
+        {% if helcim_source == 'portainer' %}
+        <p class="small muted">The token comes from <code>HELCIM_API_TOKEN</code> in Portainer, which overrides this page. Remove it there to manage it here.</p>
+        {% else %}
+        <label>Helcim API token
+          <input type="password" name="helcim_token" autocomplete="off" placeholder="{{ 'Saved. Paste a new one to replace it' if helcim_saved else 'Paste the token from Helcim' }}"></label>
+        {% if helcim_saved %}<label class="check"><input type="checkbox" name="remove_helcim_token"> Remove the saved token</label>{% endif %}
+        {% endif %}
       </div>
     </div>
   </section>
 
+  <section class="card" id="email">
+    <h2>Email sending</h2>
+    <p class="small">Status:
+      {% if smtp %}<span class="badge paid">ready</span>{% else %}<span class="badge draft">not set up</span> Invoices can still be sent with "Open in email app".{% endif %}</p>
+    {% if smtp_source == 'portainer' %}
+    <p class="small muted">Email settings come from the <code>SMTP_…</code> values in Portainer, which override this page. Remove them there to manage email here.</p>
+    {% else %}
+    <div class="grid3">
+      <label>Email server <input name="smtp_host" value="{{ s.smtp_host }}" placeholder="giowm1301.siteground.biz"></label>
+      <label>Port <input name="smtp_port" value="{{ s.smtp_port }}" inputmode="numeric"></label>
+      <label>Security <select name="smtp_security">
+        {% for v, l in [('ssl', 'SSL (port 465)'), ('starttls', 'STARTTLS (port 587)'), ('none', 'None')] %}<option value="{{ v }}" {% if s.smtp_security == v %}selected{% endif %}>{{ l }}</option>{% endfor %}
+      </select></label>
+      <label>Username <input name="smtp_user" value="{{ s.smtp_user }}" placeholder="team@flamewise.ca" autocomplete="off"></label>
+      <label>Password <input type="password" name="smtp_password" autocomplete="new-password" placeholder="{{ 'Saved. Type a new one to replace it' if smtp_password_saved else 'Mailbox password' }}"></label>
+      <label>Send as <input name="smtp_from" value="{{ s.smtp_from }}" placeholder="Flame Wise Tattoo Collective <team@flamewise.ca>"></label>
+    </div>
+    {% endif %}
+  </section>
+
   <section class="card">
     <h2>Email message</h2>
-    <p class="small">Sending from the app:
-      {% if smtp %}<span class="badge paid">SMTP set up</span>{% else %}<span class="badge draft">not set up</span> — "Open in email app" still works.{% endif %}</p>
     <label>Subject <input name="email_subject" value="{{ s.email_subject }}"></label>
     <label>Body <textarea name="email_body" rows="8">{{ s.email_body }}</textarea></label>
     <p class="small muted">Placeholders: {client} {number} {amount} {balance} {total} {due_date} {link} {email} {business}</p>
@@ -84,6 +109,16 @@
 
   <div class="actions"><button class="btn">Save settings</button></div>
 </form>
+
+<section class="card">
+  <h2>Send a test email</h2>
+  <form method="post" action="{{ url_for('settings_test_email') }}" class="copy-row">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="email" name="to" value="{{ current_user().email }}" aria-label="Send the test to">
+    <button class="btn small ghost">Send test</button>
+  </form>
+  <p class="small muted">Uses the saved settings, so save first.</p>
+</section>
 {% endblock %}
 {% block scripts %}<script>
 const p=document.getElementById('accent_picker'),t=document.getElementById('accent_color');
