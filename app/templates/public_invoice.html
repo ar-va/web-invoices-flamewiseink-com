@@ -45,7 +45,7 @@
   <div class="flash ok">Paid in full — thank you!</div>
 {% endif %}
 
-<div class="public-tools no-print"><button class="link" onclick="window.print()">Print or save as PDF</button></div>
+<div class="public-tools no-print">{% if s.business_email %}<span class="small muted">Questions? <a href="mailto:{{ s.business_email }}">{{ s.business_email }}</a></span> · {% endif %}<button class="link" onclick="window.print()">Print or save as PDF</button></div>
 <div class="paper">{% include "_doc.html" %}</div>
 {% endif %}
 {% endblock %}

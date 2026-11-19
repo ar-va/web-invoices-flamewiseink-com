@@ -364,3 +364,11 @@ with mock.patch.object(A.requests, "post", init_ok), \
 assert row(H)["status"] == "paid" and row(H)["paid_cents"] == 8000
 assert any("may need a refund (invoice was void)" in e for e in events(H)), events(H)
 print("LIFECYCLE E2E TESTS PASSED")
+
+# --- contact email shown to clients ---
+assert A.DEFAULTS["business_email"] == "team@flamewise.ca"
+with A.app.app_context():
+    A.save_settings({"business_email": "team@flamewise.ca"})
+_pp = anon.get(f"/i/{Htok}").get_data(as_text=True)
+assert 'Questions? <a href="mailto:team@flamewise.ca">' in _pp
+print("CONTACT EMAIL TESTS PASSED")

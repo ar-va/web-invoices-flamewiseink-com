@@ -85,7 +85,7 @@ app.config.update(
 DEFAULTS = {
     "business_name": "Flame Wise Tattoo Collective",
     "business_address": "219 Dufferin St, Unit 206B\nToronto, ON M6V 0B2",
-    "business_email": "ads@flamewiseink.ca",
+    "business_email": "team@flamewise.ca",
     "business_phone": "",
     "business_website": "",
     "tax_number_label": "HST #",
