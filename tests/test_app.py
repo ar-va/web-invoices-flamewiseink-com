@@ -148,8 +148,8 @@ with mock.patch.object(A.requests, "post", fake_post2), mock.patch.object(A.requ
 with A.app.app_context():
     assert A.q("SELECT status FROM invoices WHERE id=?", (b["id"],), one=True)["status"] == "paid"
 
-# artist account sees only own
-post("/users", {"name": "Artie", "email": "artie@x.ca", "role": "artist", "password": "artistpass1"})
+# advertising account sees only own
+post("/users", {"name": "Artie", "email": "artie@x.ca", "role": "advertising", "password": "artistpass1"})
 ac = A.app.test_client()
 t2 = csrf(ac.get("/login").get_data(as_text=True))
 assert ac.post("/login", data={"_csrf": t2, "email": "artie@x.ca", "password": "artistpass1"}).status_code == 302
@@ -205,3 +205,34 @@ post(f"/invoices/{cid}/edit", {"client_name": "Carla", "issue_date": "2026-11-19
 pub = anon.get(f"/i/{ct}").get_data(as_text=True)
 assert 'value="ads@flamewiseink.ca" id="et-email"' in pub
 print("ETRANSFER TESTS PASSED")
+
+# --- Studio Manager: all invoices, no settings/accounts ---
+post("/users", {"name": "Mona", "email": "mona@x.ca", "role": "manager", "password": "managerpass1"})
+mc = A.app.test_client()
+t3 = csrf(mc.get("/login").get_data(as_text=True))
+assert mc.post("/login", data={"_csrf": t3, "email": "mona@x.ca", "password": "managerpass1"}).status_code == 302
+md = mc.get("/?f=all").get_data(as_text=True)
+assert "FW-1001" in md and "Export CSV" in md and ">By<" in md
+assert mc.get(f"/invoices/{iid}").status_code == 200
+assert mc.get("/settings").status_code == 403 and mc.get("/users").status_code == 403
+assert mc.get("/export.csv").status_code == 200
+assert "Settings</a>" not in md and "Accounts</a>" not in md
+# advertising: no CSV, no By column
+ad = ac.get("/").get_data(as_text=True)
+assert "Export CSV" not in ad and ">By<" not in ad and ac.get("/export.csv").status_code == 403
+# role labels on accounts page
+up = get("/users")
+assert "Studio Manager" in up and "Advertising" in up and ">Staff<" not in up
+# invoice shows creator label
+with A.app.app_context():
+    A.save_settings({"show_artist": "1"})
+assert "Prepared by" in get(f"/invoices/{iid}")
+# old role names are migrated on start
+with A.app.app_context():
+    A.x("UPDATE users SET role='staff' WHERE email='mona@x.ca'")
+    A.x("UPDATE users SET role='artist' WHERE email='artie@x.ca'")
+A.bootstrap()
+with A.app.app_context():
+    roles = {r["email"]: r["role"] for r in A.q("SELECT email, role FROM users")}
+assert roles["mona@x.ca"] == "manager" and roles["artie@x.ca"] == "advertising", roles
+print("ROLE TESTS PASSED")

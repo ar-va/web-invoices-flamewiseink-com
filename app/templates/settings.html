@@ -30,7 +30,8 @@
       <div>
         <label>Accent color <span class="color-row"><input type="color" id="accent_picker" value="{{ s.accent_color }}"><input name="accent_color" id="accent_color" value="{{ s.accent_color }}"></span></label>
         <label>Document title <input name="invoice_title" value="{{ s.invoice_title }}"></label>
-        <label class="check"><input type="checkbox" name="show_artist" {% if s.show_artist == '1' %}checked{% endif %}> Show the artist's name on invoices</label>
+        <label class="check"><input type="checkbox" name="show_artist" {% if s.show_artist == '1' %}checked{% endif %}> Show who created the invoice</label>
+        <label>Label for that line <input name="creator_label" value="{{ s.creator_label }}" placeholder="Prepared by"></label>
       </div>
     </div>
   </section>

@@ -13,7 +13,7 @@
       <tr class="{% if not u.active %}inactive{% endif %}">
           <td><form id="{{ fid }}" method="post" action="{{ url_for('user_update', uid=u.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"></form>
               <strong>{{ u.name }}</strong><div class="small muted">{{ u.email }}</div></td>
-          <td><select name="role" form="{{ fid }}">{% for r in ROLES %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r|capitalize }}</option>{% endfor %}</select></td>
+          <td><select name="role" form="{{ fid }}">{% for r, (label, _) in ROLES.items() %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></td>
           <td class="c"><input type="checkbox" name="active" form="{{ fid }}" {% if u.active %}checked{% endif %}></td>
           <td><input type="password" name="password" form="{{ fid }}" placeholder="leave blank" autocomplete="new-password"></td>
           <td><button class="btn small" form="{{ fid }}">Save</button></td>
@@ -21,7 +21,7 @@
       {% endfor %}
       </tbody>
     </table>
-    <ul class="small muted plain">{% for r, d in ROLES.items() %}<li>{{ d }}</li>{% endfor %}</ul>
+    <ul class="small muted plain">{% for r, (label, d) in ROLES.items() %}<li><strong>{{ label }}</strong> – {{ d }}</li>{% endfor %}</ul>
   </section>
   <section class="card">
     <h2>Add account</h2>
@@ -29,7 +29,7 @@
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <label>Name <input name="name" required></label>
       <label>Email <input type="email" name="email" required></label>
-      <label>Role <select name="role">{% for r in ROLES %}<option value="{{ r }}" {% if r == 'artist' %}selected{% endif %}>{{ r|capitalize }}</option>{% endfor %}</select></label>
+      <label>Role <select name="role">{% for r, (label, _) in ROLES.items() %}<option value="{{ r }}" {% if r == 'advertising' %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
       <label>Password (10+ characters) <input type="text" name="password" minlength="10" required autocomplete="new-password"></label>
       <button class="btn full">Create account</button>
     </form>

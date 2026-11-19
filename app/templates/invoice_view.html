@@ -75,7 +75,7 @@
           <strong>{{ p.amount_cents|money }}</strong> · {{ p.method }} · {{ p.paid_on|datefmt }}
           {% if p.reference %}<div class="small muted">{{ p.reference }}</div>{% endif %}
           {% if p.note %}<div class="small muted">{{ p.note }}</div>{% endif %}
-          {% if current_user().role in ('admin','staff') %}
+          {% if sees_all() %}
           <form method="post" action="{{ url_for('payment_delete', iid=inv.id, pid=p.id) }}" class="inline" onsubmit="return confirm('Remove this payment record?')">
             <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="link small danger">remove</button>
           </form>

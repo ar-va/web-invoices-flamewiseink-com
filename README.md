@@ -2,7 +2,7 @@
 
 Self-hosted invoice generator for the Ugreen NAS. Runs as one small container (~60 MB RAM).
 
-- Accounts with roles: **Admin** (everything), **Staff** (all invoices), **Artist** (only their own invoices)
+- Accounts with roles: **Admin** (everything), **Studio Manager** (all invoices, no settings/accounts), **Advertising** (only invoices they created)
 - Customizable: logo, accent color, business info, HST #, numbering, tax, default notes/terms, quick-add items, e-Transfer wording, email wording
 - Clients get a private link to view, print/PDF and pay
 - Payment: Interac e-Transfer to pay@flamewiseink.ca by default (main; can be changed per invoice), Helcim card checkout (optional)
@@ -31,9 +31,9 @@ If the tests fail, nothing is deployed.
    - Environment variables: `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `BASE_URL` (later: `HELCIM_API_TOKEN`, `SECURE_COOKIES`)
    - Deploy the stack.
 4. **Check it runs.** Open `http://<NAS-IP>:8095` and log in.
-5. **Publish it.** Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Public hostname → add `invoices.flamewiseink.ca` → service `http://<NAS-IP>:8095`.
+5. **Publish it.** Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Public hostname → add `invoices.flamewiseink.com` → service `http://<NAS-IP>:8095`.
 6. **Lock cookies to https.** Stack → Environment variables → `SECURE_COOKIES` = `true` → Update the stack.
-7. **Set up branding.** In the app: Settings → logo, HST #, quick-add items → Save. Then Accounts → add each artist.
+7. **Set up branding.** In the app: Settings → logo, HST #, quick-add items → Save. Then Accounts → add each person with the right role.
 
 Secrets (passwords, Helcim token) live only in Portainer's environment variables, never in the repo.
 
@@ -62,7 +62,7 @@ Everything lives in the Docker volume `invoices_invoices_data` (Portainer → Vo
 
 ## Optional extra protection
 
-Cloudflare Zero Trust → Access → Applications → protect `invoices.flamewiseink.ca` for staff only, and add a bypass policy for paths `/i/*`, `/static/*`, `/uploads/*` so clients can still open and pay invoices.
+Cloudflare Zero Trust → Access → Applications → protect `invoices.flamewiseink.com` for staff only, and add a bypass policy for paths `/i/*`, `/static/*`, `/uploads/*` so clients can still open and pay invoices.
 
 ## Updating
 

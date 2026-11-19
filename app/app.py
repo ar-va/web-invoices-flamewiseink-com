@@ -1,6 +1,6 @@
 """Flame Wise Tattoo Collective - self-hosted invoice generator.
 
-Flask + SQLite. Multi-user (admin / staff / artist), customizable branding and
+Flask + SQLite. Multi-user (admin / studio manager / advertising), customizable branding and
 templates, Interac e-Transfer instructions, optional Helcim card payments via
 HelcimPay.js.
 """
@@ -42,10 +42,12 @@ HELCIM_TOKEN = os.environ.get("HELCIM_API_TOKEN", "").strip()
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 
 ROLES = {
-    "admin": "Admin - everything, incl. settings and accounts",
-    "staff": "Staff - all invoices, no settings/accounts",
-    "artist": "Artist - only invoices they created",
+    "admin": ("Admin", "everything, incl. settings and accounts"),
+    "manager": ("Studio Manager", "all invoices, no settings or accounts"),
+    "advertising": ("Advertising", "only invoices they created"),
 }
+SEE_ALL_ROLES = ("admin", "manager")
+OLD_ROLE_NAMES = {"staff": "manager", "artist": "advertising"}
 STATUSES = ["draft", "sent", "partial", "paid", "void"]
 PAY_METHODS = ["e-Transfer", "Helcim (card)", "Cash", "Debit/Credit (terminal)", "Other"]
 
@@ -95,6 +97,7 @@ DEFAULTS = {
     "tax_rate": "13",
     "currency": "CAD",
     "show_artist": "1",
+    "creator_label": "Prepared by",
     "default_notes": "Thank you for choosing Flame Wise Tattoo Collective!",
     "default_terms": "",
     "quick_items": "",
@@ -121,7 +124,7 @@ SCHEMA = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL COLLATE NOCASE, name TEXT NOT NULL,
-  password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'staff', active INTEGER NOT NULL DEFAULT 1,
+  password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'advertising', active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS invoices(
@@ -165,6 +168,8 @@ def bootstrap():
     cols = {r[1] for r in con.execute("PRAGMA table_info(invoices)")}
     if "etransfer_email" not in cols:
         con.execute("ALTER TABLE invoices ADD COLUMN etransfer_email TEXT")
+    for old, new in OLD_ROLE_NAMES.items():
+        con.execute("UPDATE users SET role=? WHERE role=?", (new, old))
     count = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     if count == 0:
         email = os.environ.get("ADMIN_EMAIL", "").strip()
@@ -429,7 +434,15 @@ def can_see(inv):
     u = current_user()
     if not u:
         return False
-    return u["role"] in ("admin", "staff") or inv["created_by"] == u["id"]
+    return u["role"] in SEE_ALL_ROLES or inv["created_by"] == u["id"]
+
+
+def sees_all():
+    u = current_user()
+    return bool(u) and u["role"] in SEE_ALL_ROLES
+
+
+app.jinja_env.globals["sees_all"] = sees_all
 
 
 def get_invoice(iid):
@@ -491,7 +504,7 @@ def logout():
 def dashboard():
     u = current_user()
     where, args = ["1=1"], []
-    if u["role"] == "artist":
+    if u["role"] not in SEE_ALL_ROLES:
         where.append("i.created_by=?")
         args.append(u["id"])
     base_where, base_args = list(where), list(args)
@@ -801,7 +814,7 @@ def payment_add(iid):
 
 
 @app.post("/invoices/<int:iid>/payments/<int:pid>/delete")
-@login_required("admin", "staff")
+@login_required(*SEE_ALL_ROLES)
 def payment_delete(iid, pid):
     get_invoice(iid)
     p = q("SELECT * FROM payments WHERE id=? AND invoice_id=?", (pid, iid), one=True)
@@ -1100,7 +1113,7 @@ def uploads(name):
 TEXT_SETTINGS = ["business_name", "business_address", "business_email", "business_phone", "business_website",
                  "tax_number_label", "tax_number", "accent_color", "invoice_title", "invoice_prefix", "next_number",
                  "default_due_days", "tax_name", "tax_rate", "currency", "default_notes", "default_terms",
-                 "quick_items", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body"]
+                 "quick_items", "creator_label", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body"]
 BOOL_SETTINGS = ["show_artist", "etransfer_enabled", "helcim_enabled", "helcim_fee"]
 
 
@@ -1152,7 +1165,7 @@ def users_page():
     if request.method == "POST":
         email = request.form.get("email", "").strip()
         name = request.form.get("name", "").strip()
-        role = request.form.get("role", "staff")
+        role = request.form.get("role", "advertising")
         pw = request.form.get("password", "")
         if not email or not name or role not in ROLES or len(pw) < 10:
             flash("Fill in name, email and role. Password needs 10+ characters.", "error")
@@ -1214,7 +1227,7 @@ def account():
 
 
 @app.route("/export.csv")
-@login_required("admin", "staff")
+@login_required(*SEE_ALL_ROLES)
 def export_csv():
     out = io.StringIO()
     w = csv.writer(out)

@@ -17,12 +17,12 @@
     <input type="hidden" name="f" value="all">
     <input type="search" name="q" value="{{ search }}" placeholder="Search number, client, email">
   </form>
-  {% if current_user().role in ('admin','staff') %}<a class="muted small" href="{{ url_for('export_csv') }}">Export CSV</a>{% endif %}
+  {% if sees_all() %}<a class="muted small" href="{{ url_for('export_csv') }}">Export CSV</a>{% endif %}
 </div>
 
 {% if invoices %}
 <table class="list">
-  <thead><tr><th>Number</th><th>Client</th><th>Issued</th><th>Due</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th>{% if current_user().role != 'artist' %}<th>By</th>{% endif %}</tr></thead>
+  <thead><tr><th>Number</th><th>Client</th><th>Issued</th><th>Due</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th>{% if sees_all() %}<th>By</th>{% endif %}</tr></thead>
   <tbody>
   {% for i in invoices %}
     {% set st = display_status(i) %}
@@ -34,7 +34,7 @@
       <td class="r">{{ i.total_cents|money }}</td>
       <td class="r">{{ (i.total_cents - i.paid_cents)|money if i.status != 'void' else '—' }}</td>
       <td><span class="badge {{ st }}">{{ st }}</span></td>
-      {% if current_user().role != 'artist' %}<td class="muted">{{ i.artist_name or '' }}</td>{% endif %}
+      {% if sees_all() %}<td class="muted">{{ i.artist_name or '' }}</td>{% endif %}
     </tr>
   {% endfor %}
   </tbody>
