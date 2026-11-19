@@ -73,7 +73,9 @@ with A.app.app_context():
 
 # public draft hidden from anonymous
 anon = A.app.test_client()
-assert anon.get(f"/i/{token}").status_code == 404
+_d = anon.get(f"/i/{token}")
+assert _d.status_code == 200 and "being updated" in _d.get_data(as_text=True)
+assert "Jane Doe" not in _d.get_data(as_text=True) and "432.52" not in _d.get_data(as_text=True)
 # preview works for logged in
 assert "Preview" in get(f"/i/{token}")
 
@@ -236,3 +238,129 @@ with A.app.app_context():
     roles = {r["email"]: r["role"] for r in A.q("SELECT email, role FROM users")}
 assert roles["mona@x.ca"] == "manager" and roles["artie@x.ca"] == "advertising", roles
 print("ROLE TESTS PASSED")
+
+# --- Invoice lifecycle rules, end to end ---
+def new_invoice(client, tok, name, price="100", tax="0"):
+    r = client.post("/invoices/new", data={"_csrf": tok, "client_name": name, "client_email": f"{name.lower()}@x.ca",
+                                           "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": tax,
+                                           "item_desc": ["Session"], "item_qty": ["1"], "item_price": [price],
+                                           "item_taxable": ["1"]})
+    assert r.status_code == 302, r.get_data(as_text=True)[:500]
+    return int(r.headers["Location"].split("/")[-1])
+
+def row(iid):
+    with A.app.app_context():
+        return dict(A.q("SELECT * FROM invoices WHERE id=?", (iid,), one=True))
+
+def events(iid):
+    with A.app.app_context():
+        return [e["text"] for e in A.q("SELECT text FROM events WHERE invoice_id=? ORDER BY id", (iid,))]
+
+def flashed(client, iid):
+    import html as _html
+    return _html.unescape(client.get(f"/invoices/{iid}").get_data(as_text=True))
+
+TOK = csrf(get("/"))
+L1 = new_invoice(c, TOK, "Lena")
+post(f"/invoices/{L1}/status", {"action": "sent"})
+# Q3 overpayment refused
+post(f"/invoices/{L1}/payments", {"amount": "150", "method": "e-Transfer"})
+assert row(L1)["paid_cents"] == 0 and "more than the $100.00 still owed" in flashed(c, L1)
+post(f"/invoices/{L1}/payments", {"amount": "40", "method": "e-Transfer"})
+assert row(L1)["status"] == "partial" and row(L1)["paid_cents"] == 4000
+# Q1 void with payments refused
+post(f"/invoices/{L1}/status", {"action": "void"})
+assert row(L1)["status"] == "partial" and "can't be voided" in flashed(c, L1)
+# Q6 reopen refused once paid
+post(f"/invoices/{L1}/status", {"action": "reopen"})
+assert row(L1)["status"] == "partial"
+# Q7 edit below money received refused; edit up keeps partial
+post(f"/invoices/{L1}/edit", {"client_name": "Lena", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "0",
+                              "item_desc": ["Session"], "item_qty": ["1"], "item_price": ["30"], "item_taxable": ["1"]}, code=400)
+post(f"/invoices/{L1}/edit", {"client_name": "Lena", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "0",
+                              "item_desc": ["Session"], "item_qty": ["1"], "item_price": ["40"], "item_taxable": ["1"]})
+assert row(L1)["status"] == "paid" and row(L1)["paid_at"]
+assert any("total $100.00 → $40.00" in e for e in events(L1)), events(L1)
+assert "Paid in full" in events(L1)
+# Q8 Advertising can't remove payments (manager can)
+with A.app.app_context():
+    pid = A.q("SELECT id FROM payments WHERE invoice_id=?", (L1,), one=True)["id"]
+# Q10 admin can't delete a paid invoice
+post(f"/invoices/{L1}/delete", {})
+assert row(L1)["status"] == "paid"
+# Manager removes the payment -> sent
+t3 = csrf(mc.get("/").get_data(as_text=True))
+assert mc.post(f"/invoices/{L1}/payments/{pid}/delete", data={"_csrf": t3}).status_code == 302
+assert row(L1)["status"] == "sent" and row(L1)["paid_cents"] == 0 and row(L1)["paid_at"] is None
+# now void is allowed, then payments refused on void
+post(f"/invoices/{L1}/status", {"action": "void"})
+assert row(L1)["status"] == "void"
+post(f"/invoices/{L1}/payments", {"amount": "10", "method": "Cash"})
+assert row(L1)["paid_cents"] == 0
+# void -> back to draft -> admin may delete draft
+post(f"/invoices/{L1}/status", {"action": "reopen"})
+assert row(L1)["status"] == "draft"
+
+# Advertising: own invoice, can record payment but not remove it, can't delete
+t2 = csrf(ac.get("/").get_data(as_text=True))
+A1 = new_invoice(ac, t2, "Adele")
+assert ac.post(f"/invoices/{A1}/payments", data={"_csrf": t2, "amount": "25", "method": "e-Transfer"}).status_code == 302
+assert row(A1)["status"] == "partial" and row(A1)["sent_at"]              # Q5 draft + payment -> sent
+with A.app.app_context():
+    apid = A.q("SELECT id FROM payments WHERE invoice_id=?", (A1,), one=True)["id"]
+ac.post(f"/invoices/{A1}/payments/{apid}/delete", data={"_csrf": t2})
+assert row(A1)["paid_cents"] == 2500
+_ap = ac.get(f"/invoices/{A1}").get_data(as_text=True)
+assert f"/payments/{apid}/delete" not in _ap and "Delete permanently" not in _ap and "Void invoice" not in _ap
+ac.post(f"/invoices/{A1}/delete", data={"_csrf": t2})
+assert row(A1)["status"] == "partial"
+# client autocomplete: Advertising only sees own clients (Adele, Jane Doe from earlier), not Lena/Carla
+form = ac.get("/invoices/new").get_data(as_text=True)
+assert "adele@x.ca" in form and "lena@x.ca" not in form and "carla" not in form.lower(), form[-800:]
+assert "\"Lena\"" in get("/invoices/new") and "\"Lena\"" not in form   # admin sees all
+
+# Q4 $0 invoice becomes paid when sent
+Z = new_invoice(c, TOK, "Zero", price="0")
+post(f"/invoices/{Z}/status", {"action": "sent"})
+assert row(Z)["status"] == "paid"
+
+# Admin deletes a draft
+D = new_invoice(c, TOK, "Dora")
+post(f"/invoices/{D}/delete", {})
+with A.app.app_context():
+    assert A.q("SELECT 1 FROM invoices WHERE id=?", (D,), one=True) is None
+
+# Q9 overdue starts the day after the due date
+with A.app.app_context():
+    import datetime as _dt
+    r_ = A.q("SELECT * FROM invoices WHERE id=?", (A1,), one=True)
+    d = dict(r_); d["due_date"] = A.today().isoformat()
+    assert A.L.display_status(A.L.Invoice.from_row(d), A.today()) == "partial"
+    d["due_date"] = (A.today() - _dt.timedelta(days=1)).isoformat()
+    assert A.L.display_status(A.L.Invoice.from_row(d), A.today()) == "overdue"
+
+# Helcim: charge smaller than checkout is rejected; voided-while-paying is recorded and flagged
+H = new_invoice(c, TOK, "Hana", price="80")
+post(f"/invoices/{H}/status", {"action": "sent"})
+Htok = row(H)["token"]
+def hpost(path, **kw):
+    return anon.post(path, **kw)
+def init_ok(url, json=None, headers=None, timeout=None):
+    return R(200, {"checkoutToken": "ctH" + str(len(calls)), "secretToken": "s"})
+with mock.patch.object(A.requests, "post", init_ok), \
+     mock.patch.object(A.requests, "get", lambda url, headers=None, timeout=None: R(200, {"transactionId": 7001, "status": "APPROVED", "amount": "5.00", "dateCreated": "2026-11-19 10:00:00"})):
+    ct = hpost(f"/i/{Htok}/helcim/start").get_json()["checkoutToken"]
+    r = hpost(f"/i/{Htok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": {"data": {"transactionId": 7001}}})
+    assert r.status_code == 400 and row(H)["paid_cents"] == 0
+    assert any("claim rejected" in e for e in events(H))
+calls["n"] = 1
+with mock.patch.object(A.requests, "post", init_ok), \
+     mock.patch.object(A.requests, "get", lambda url, headers=None, timeout=None: R(200, {"transactionId": 7002, "status": "APPROVED", "amount": "80.00"})):
+    ct = hpost(f"/i/{Htok}/helcim/start").get_json()["checkoutToken"]
+    post(f"/invoices/{H}/status", {"action": "void"})                       # staff voids while client pays
+    assert row(H)["status"] == "void"
+    r = hpost(f"/i/{Htok}/helcim/confirm", json={"checkoutToken": ct, "eventMessage": {"data": {"transactionId": 7002}}})
+    assert r.status_code == 200, r.data
+assert row(H)["status"] == "paid" and row(H)["paid_cents"] == 8000
+assert any("may need a refund (invoice was void)" in e for e in events(H)), events(H)
+print("LIFECYCLE E2E TESTS PASSED")

@@ -1,6 +1,6 @@
 {# The printable invoice document. Needs: inv, items, payments, s #}
 {% set st = display_status(inv) %}
-{% set balance = inv.total_cents - inv.paid_cents %}
+{% set balance = balance_of(inv) %}
 <article class="doc">
   {% if st in ('paid', 'void', 'overdue') %}<div class="stamp {{ st }}">{{ st }}</div>{% endif %}
   <header class="doc-head">
@@ -20,7 +20,7 @@
         <tr><th>Issued</th><td>{{ inv.issue_date|datefmt }}</td></tr>
         <tr><th>Due</th><td>{{ inv.due_date|datefmt }}</td></tr>
         {% if s.show_artist == '1' and inv.artist_name %}<tr><th>{{ s.creator_label or 'Prepared by' }}</th><td>{{ inv.artist_name }}</td></tr>{% endif %}
-        <tr class="due-row"><th>Balance due</th><td>{{ (balance if balance > 0 else 0)|money }}</td></tr>
+        <tr class="due-row"><th>Balance due</th><td>{{ balance|money }}</td></tr>
       </table>
     </div>
   </header>
@@ -49,7 +49,7 @@
     {% if inv.tax_cents or inv.tax_rate|float > 0 %}<div><span>{{ inv.tax_name or 'Tax' }} ({{ inv.tax_rate|qty }}%)</span><span>{{ inv.tax_cents|money }}</span></div>{% endif %}
     <div class="grand"><span>Total {{ s.currency }}</span><span>{{ inv.total_cents|money }}</span></div>
     {% for p in payments %}<div class="muted"><span>Paid {{ p.paid_on|datefmt }} · {{ p.method }}</span><span>-{{ p.amount_cents|money }}</span></div>{% endfor %}
-    {% if payments %}<div class="grand"><span>Balance due</span><span>{{ (balance if balance > 0 else 0)|money }}</span></div>{% endif %}
+    {% if payments %}<div class="grand"><span>Balance due</span><span>{{ balance|money }}</span></div>{% endif %}
   </div>
 
   {% if balance > 0 and inv.status != 'void' and s.etransfer_enabled == '1' %}

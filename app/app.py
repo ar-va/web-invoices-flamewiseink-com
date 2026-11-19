@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from email.message import EmailMessage
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
@@ -28,6 +29,8 @@ from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
                    url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
+
+import lifecycle as L
 
 # --------------------------------------------------------------------------
 # Config
@@ -46,9 +49,9 @@ ROLES = {
     "manager": ("Studio Manager", "all invoices, no settings or accounts"),
     "advertising": ("Advertising", "only invoices they created"),
 }
-SEE_ALL_ROLES = ("admin", "manager")
+SEE_ALL_ROLES = L.SEES_ALL_ROLES
 OLD_ROLE_NAMES = {"staff": "manager", "artist": "advertising"}
-STATUSES = ["draft", "sent", "partial", "paid", "void"]
+STATUSES = [L.DRAFT, L.SENT, L.PARTIAL, L.PAID, L.VOID]
 PAY_METHODS = ["e-Transfer", "Helcim (card)", "Cash", "Debit/Credit (terminal)", "Other"]
 
 log = logging.getLogger("invoices")
@@ -238,8 +241,13 @@ def save_settings(values):
     g.pop("settings", None)
 
 
-def add_event(invoice_id, text):
-    x("INSERT INTO events(invoice_id,at,text) VALUES(?,?,?)", (invoice_id, now_iso(), text))
+def add_event(invoice_id, text, con=None):
+    """Log to the invoice's activity. Pass con to join the caller's transaction."""
+    sql, args = "INSERT INTO events(invoice_id,at,text) VALUES(?,?,?)", (invoice_id, now_iso(), text)
+    if con is not None:
+        con.execute(sql, args)
+    else:
+        x(sql, args)
 
 
 # --------------------------------------------------------------------------
@@ -324,14 +332,28 @@ def compute_totals(items, tax_rate, discount_cents):
     return {"subtotal": subtotal, "discount": disc, "tax": tax, "total": subtotal - disc + tax}
 
 
+def today():
+    """Today's date in the studio's time zone (overdue and payment dates use it)."""
+    try:
+        return datetime.now(ZoneInfo(os.environ.get("TZ") or "America/Toronto")).date()
+    except Exception:  # noqa: BLE001 - bad TZ value
+        return datetime.now(ZoneInfo("America/Toronto")).date()
+
+
+def state(inv):
+    return L.Invoice.from_row(inv)
+
+
 def display_status(inv):
-    st = inv["status"]
-    if st in ("sent", "partial") and inv["due_date"] < date.today().isoformat():
-        return "overdue"
-    return st
+    return L.display_status(state(inv), today())
 
 
-app.jinja_env.globals.update(display_status=display_status, ROLES=ROLES, PAY_METHODS=PAY_METHODS)
+def balance_of(inv):
+    return L.balance(state(inv))
+
+
+app.jinja_env.globals.update(display_status=display_status, balance_of=balance_of, ROLES=ROLES,
+                             PAY_METHODS=PAY_METHODS)
 
 
 def etransfer_email_for(inv):
@@ -430,19 +452,24 @@ def login_required(*roles):
     return deco
 
 
-def can_see(inv):
+def actor():
     u = current_user()
-    if not u:
-        return False
-    return u["role"] in SEE_ALL_ROLES or inv["created_by"] == u["id"]
+    return L.Actor(u["id"], u["role"]) if u else None
+
+
+def can_see(inv):
+    return L.can_view(state(inv), actor())
 
 
 def sees_all():
-    u = current_user()
-    return bool(u) and u["role"] in SEE_ALL_ROLES
+    return L.sees_all(actor())
 
 
-app.jinja_env.globals["sees_all"] = sees_all
+def allowed(inv):
+    return L.allowed_actions(state(inv), actor())
+
+
+app.jinja_env.globals.update(sees_all=sees_all, allowed=allowed)
 
 
 def get_invoice(iid):
@@ -504,18 +531,19 @@ def logout():
 def dashboard():
     u = current_user()
     where, args = ["1=1"], []
-    if u["role"] not in SEE_ALL_ROLES:
+    if not sees_all():
         where.append("i.created_by=?")
         args.append(u["id"])
     base_where, base_args = list(where), list(args)
 
     f = request.args.get("f", "open")
-    today = date.today().isoformat()
+    day = today()
+    open_in = ",".join(f"'{st}'" for st in L.OPEN_STATUSES)
     if f == "open":
-        where.append("i.status IN ('draft','sent','partial')")
+        where.append(f"i.status IN ('{L.DRAFT}',{open_in})")
     elif f == "overdue":
-        where.append("i.status IN ('sent','partial') AND i.due_date < ?")
-        args.append(today)
+        where.append(f"i.status IN ({open_in}) AND i.due_date < ?")
+        args.append(day.isoformat())
     elif f in STATUSES:
         where.append("i.status=?")
         args.append(f)
@@ -528,11 +556,11 @@ def dashboard():
                     WHERE {' AND '.join(where)} ORDER BY i.id DESC LIMIT 500""", args)
     bw = " AND ".join(base_where)
     stats = {
-        "outstanding": q(f"SELECT COALESCE(SUM(total_cents-paid_cents),0) v FROM invoices i WHERE {bw} AND status IN ('sent','partial')", base_args, one=True)["v"],
-        "overdue": q(f"SELECT COUNT(*) v FROM invoices i WHERE {bw} AND status IN ('sent','partial') AND due_date < ?", base_args + [today], one=True)["v"],
+        "outstanding": q(f"SELECT COALESCE(SUM(MAX(total_cents-paid_cents,0)),0) v FROM invoices i WHERE {bw} AND status IN ({open_in})", base_args, one=True)["v"],
+        "overdue": q(f"SELECT COUNT(*) v FROM invoices i WHERE {bw} AND status IN ({open_in}) AND due_date < ?", base_args + [day.isoformat()], one=True)["v"],
         "drafts": q(f"SELECT COUNT(*) v FROM invoices i WHERE {bw} AND status='draft'", base_args, one=True)["v"],
         "paid_month": q(f"""SELECT COALESCE(SUM(p.amount_cents),0) v FROM payments p JOIN invoices i ON i.id=p.invoice_id
-                           WHERE {bw} AND p.paid_on >= ?""", base_args + [date.today().replace(day=1).isoformat()], one=True)["v"],
+                           WHERE {bw} AND p.paid_on >= ?""", base_args + [day.replace(day=1).isoformat()], one=True)["v"],
     }
     return render_template("dashboard.html", invoices=invoices, stats=stats, f=f, search=search)
 
@@ -613,9 +641,12 @@ def parse_invoice_form(form):
 
 
 def _form_context(inv, items, is_new):
-    past_clients = q("""SELECT client_name, client_email, client_phone, client_address FROM invoices
-                        WHERE id IN (SELECT MAX(id) FROM invoices GROUP BY lower(client_name))
-                        ORDER BY client_name LIMIT 1000""")
+    where, args = "", ()
+    if not sees_all():
+        where, args = "WHERE created_by=?", (current_user()["id"],)
+    past_clients = q(f"""SELECT client_name, client_email, client_phone, client_address FROM invoices
+                        WHERE id IN (SELECT MAX(id) FROM invoices {where} GROUP BY lower(client_name))
+                        ORDER BY client_name LIMIT 1000""", args)
     clients = {r["client_name"]: {"email": r["client_email"] or "", "phone": r["client_phone"] or "",
                                   "address": r["client_address"] or ""} for r in past_clients}
     quick = []
@@ -640,11 +671,11 @@ def invoice_new():
         iid = save_invoice(None, data, items)
         flash("Invoice created.", "ok")
         return redirect(url_for("invoice_view", iid=iid))
-    today = date.today()
+    day = today()
     inv = {
         "client_name": request.args.get("client", ""), "client_email": "", "client_phone": "", "client_address": "",
-        "issue_date": today.isoformat(),
-        "due_date": (today + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
+        "issue_date": day.isoformat(),
+        "due_date": (day + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
         "tax_name": s["tax_name"], "tax_rate": s["tax_rate"], "notes": s["default_notes"], "terms": s["default_terms"],
         "etransfer_email": s["etransfer_email"],
         "number": "", "discount": "",
@@ -653,23 +684,36 @@ def invoice_new():
     return render_template("invoice_form.html", **_form_context(inv, items, True))
 
 
+def refuse(iid, err):
+    flash(str(err), "error")
+    return redirect(url_for("invoice_view", iid=iid))
+
+
 @app.route("/invoices/<int:iid>/edit", methods=["GET", "POST"])
 @login_required()
 def invoice_edit(iid):
     inv = get_invoice(iid)
-    if inv["status"] == "void":
-        flash("Voided invoices can't be edited. Reopen it first.", "error")
-        return redirect(url_for("invoice_view", iid=iid))
+    try:
+        L.require(state(inv), actor(), L.EDIT)
+    except L.LifecycleError as e:
+        return refuse(iid, e)
     if request.method == "POST":
         data, items, errors = parse_invoice_form(request.form)
         if data["number"] and data["number"] != inv["number"]:
             if q("SELECT 1 FROM invoices WHERE number=? AND id<>?", (data["number"], iid), one=True):
                 errors.append(f"Invoice number {data['number']} is already used.")
+        new_status = inv["status"]
+        if not errors:
+            try:
+                total = compute_totals(items, data["tax_rate"], data["discount_cents"])["total"]
+                new_status = L.after_edit(state(inv), total)
+            except L.LifecycleError as e:
+                errors.append(str(e))
         if errors:
             for e in errors:
                 flash(e, "error")
             return render_template("invoice_form.html", **_form_context(dict(data, id=iid), items, False)), 400
-        save_invoice(iid, data, items)
+        save_invoice(iid, data, items, old=inv, new_status=new_status)
         flash("Invoice saved.", "ok")
         return redirect(url_for("invoice_view", iid=iid))
     items = [{"description": r["description"], "qty": fmt_qty(r["qty"]), "price": plain_money(r["unit_cents"]),
@@ -679,10 +723,12 @@ def invoice_edit(iid):
     return render_template("invoice_form.html", **_form_context(data, items, False))
 
 
-def save_invoice(iid, data, items):
+def save_invoice(iid, data, items, old=None, new_status=L.DRAFT):
+    """Create (iid=None) or update an invoice and its line items in one transaction."""
     totals = compute_totals(items, data["tax_rate"], data["discount_cents"])
     con = db()
     ts = now_iso()
+    who = current_user()["name"]
     with con:
         if iid is None:
             row = con.execute("SELECT value FROM settings WHERE key='next_number'").fetchone()
@@ -697,15 +743,14 @@ def save_invoice(iid, data, items):
                 """INSERT INTO invoices(number,token,status,client_name,client_email,client_phone,client_address,
                    issue_date,due_date,tax_name,tax_rate,discount_cents,notes,terms,subtotal_cents,tax_cents,total_cents,
                    created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (number, secrets.token_urlsafe(18), "draft", data["client_name"], data["client_email"], data["client_phone"],
-                 data["client_address"], data["issue_date"], data["due_date"], data["tax_name"], data["tax_rate"],
-                 totals["discount"], data["notes"], data["terms"], totals["subtotal"], totals["tax"], totals["total"],
-                 current_user()["id"], ts, ts))
+                (number, secrets.token_urlsafe(18), L.DRAFT, data["client_name"], data["client_email"],
+                 data["client_phone"], data["client_address"], data["issue_date"], data["due_date"], data["tax_name"],
+                 data["tax_rate"], totals["discount"], data["notes"], data["terms"], totals["subtotal"],
+                 totals["tax"], totals["total"], current_user()["id"], ts, ts))
             iid = cur.lastrowid
-            con.execute("INSERT INTO events(invoice_id,at,text) VALUES(?,?,?)",
-                        (iid, ts, f"Created by {current_user()['name']}"))
+            add_event(iid, f"Created by {who}", con)
         else:
-            number = data["number"] or q("SELECT number FROM invoices WHERE id=?", (iid,), one=True)["number"]
+            number = data["number"] or old["number"]
             con.execute(
                 """UPDATE invoices SET number=?,client_name=?,client_email=?,client_phone=?,client_address=?,issue_date=?,
                    due_date=?,tax_name=?,tax_rate=?,discount_cents=?,notes=?,terms=?,subtotal_cents=?,tax_cents=?,
@@ -714,8 +759,10 @@ def save_invoice(iid, data, items):
                  data["issue_date"], data["due_date"], data["tax_name"], data["tax_rate"], totals["discount"],
                  data["notes"], data["terms"], totals["subtotal"], totals["tax"], totals["total"], ts, iid))
             con.execute("DELETE FROM items WHERE invoice_id=?", (iid,))
-            con.execute("INSERT INTO events(invoice_id,at,text) VALUES(?,?,?)",
-                        (iid, ts, f"Edited by {current_user()['name']}"))
+            change = (f" (total {money(old['total_cents'])} → {money(totals['total'])})"
+                      if old["total_cents"] != totals["total"] else "")
+            add_event(iid, f"Edited by {who}{change}", con)
+            set_status(con, old, new_status)
         con.execute("UPDATE invoices SET etransfer_email=? WHERE id=?", (data.get("etransfer_email") or None, iid))
         for pos, it in enumerate(items):
             con.execute("""INSERT INTO items(invoice_id,position,description,qty,unit_cents,taxable,amount_cents)
@@ -723,26 +770,22 @@ def save_invoice(iid, data, items):
                         (iid, pos, it["description"], it["qty"], it["unit_cents"], 1 if it["taxable"] else 0,
                          it["amount_cents"]))
     g.pop("settings", None)
-    refresh_invoice(iid)
     return iid
 
 
-def refresh_invoice(iid):
-    """Recompute paid amount and status from payments."""
-    inv = q("SELECT * FROM invoices WHERE id=?", (iid,), one=True)
-    paid = q("SELECT COALESCE(SUM(amount_cents),0) v FROM payments WHERE invoice_id=?", (iid,), one=True)["v"]
-    status, paid_at = inv["status"], inv["paid_at"]
-    if status != "void":
-        if inv["total_cents"] > 0 and paid >= inv["total_cents"]:
-            status = "paid"
-            paid_at = paid_at or now_iso()
-        elif paid > 0:
-            status, paid_at = "partial", None
-        elif status in ("paid", "partial"):
-            status, paid_at = "sent", None
-    x("UPDATE invoices SET paid_cents=?, status=?, paid_at=? WHERE id=?", (paid, status, paid_at, iid))
-    if status == "paid" and inv["status"] != "paid":
-        add_event(iid, "Paid in full")
+def set_status(con, inv, new_status, event=None, paid_delta=0):
+    """Write a status decided by the lifecycle module, inside the caller's transaction."""
+    ts = now_iso()
+    con.execute(
+        """UPDATE invoices SET status=?, paid_cents=paid_cents+?,
+             sent_at=CASE WHEN ? IN ('sent','partial','paid') THEN COALESCE(sent_at, ?) ELSE sent_at END,
+             paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at, ?) ELSE NULL END
+           WHERE id=?""",
+        (new_status, paid_delta, new_status, ts, new_status, ts, inv["id"]))
+    if event:
+        add_event(inv["id"], event, con)
+    if new_status == L.PAID and inv["status"] != L.PAID:
+        add_event(inv["id"], "Paid in full", con)
 
 
 # --------------------------------------------------------------------------
@@ -764,26 +807,31 @@ def invoice_view(iid):
     items, payments = invoice_bundle(iid)
     events = q("SELECT * FROM events WHERE invoice_id=? ORDER BY id DESC LIMIT 50", (iid,))
     return render_template("invoice_view.html", inv=inv, items=items, payments=payments, events=events,
-                           smtp=smtp_ready(), today=date.today().isoformat())
+                           smtp=smtp_ready(), today=today().isoformat(), acts=allowed(inv))
+
+
+STATUS_ACTIONS = {
+    "sent": (L.SEND, L.after_send, "Marked as sent"),
+    "void": (L.VOID_IT, L.after_void, "Voided"),
+    "reopen": (L.REOPEN, L.after_reopen, "Moved back to draft"),
+}
 
 
 @app.post("/invoices/<int:iid>/status")
 @login_required()
 def invoice_status(iid):
     inv = get_invoice(iid)
-    action = request.form.get("action")
-    who = current_user()["name"]
-    if action == "sent" and inv["status"] == "draft":
-        x("UPDATE invoices SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?", (now_iso(), iid))
-        add_event(iid, f"Marked as sent by {who}")
-    elif action == "void" and inv["status"] != "void":
-        x("UPDATE invoices SET status='void' WHERE id=?", (iid,))
-        add_event(iid, f"Voided by {who}")
-    elif action == "reopen" and inv["status"] in ("void", "sent"):
-        x("UPDATE invoices SET status='draft' WHERE id=?", (iid,))
-        add_event(iid, f"Moved back to draft by {who}")
-        refresh_invoice(iid)
-    flash("Status updated.", "ok")
+    if request.form.get("action") not in STATUS_ACTIONS:
+        abort(400)
+    action, after, label = STATUS_ACTIONS[request.form["action"]]
+    try:
+        L.require(state(inv), actor(), action)
+        new_status = after(state(inv))
+    except L.LifecycleError as e:
+        return refuse(iid, e)
+    with db() as con:
+        set_status(con, inv, new_status, f"{label} by {current_user()['name']}")
+    flash(f"{label}.", "ok")
     return redirect(url_for("invoice_view", iid=iid))
 
 
@@ -792,37 +840,43 @@ def invoice_status(iid):
 def payment_add(iid):
     inv = get_invoice(iid)
     try:
+        L.require(state(inv), actor(), L.RECORD_PAYMENT)
         amount = to_cents(request.form.get("amount"))
-        if amount <= 0:
-            raise ValueError("Amount must be more than $0.")
-        paid_on = request.form.get("paid_on") or date.today().isoformat()
+        new_status = L.after_payment(state(inv), amount)
+        paid_on = request.form.get("paid_on") or today().isoformat()
         datetime.strptime(paid_on, "%Y-%m-%d")
-    except ValueError as e:
-        flash(f"Payment not saved: {e}", "error")
-        return redirect(url_for("invoice_view", iid=iid))
+    except (L.LifecycleError, ValueError) as e:
+        return refuse(iid, f"Payment not saved: {e}")
     method = request.form.get("method") if request.form.get("method") in PAY_METHODS else "Other"
-    x("""INSERT INTO payments(invoice_id,method,amount_cents,paid_on,reference,note,created_by,created_at)
-         VALUES(?,?,?,?,?,?,?,?)""",
-      (iid, method, amount, paid_on, request.form.get("reference", "").strip(), request.form.get("note", "").strip(),
-       current_user()["id"], now_iso()))
-    if inv["status"] == "draft":
-        x("UPDATE invoices SET status='sent', sent_at=COALESCE(sent_at,?) WHERE id=?", (now_iso(), iid))
-    add_event(iid, f"{money(amount)} {method} payment recorded by {current_user()['name']}")
-    refresh_invoice(iid)
+    with db() as con:
+        con.execute("""INSERT INTO payments(invoice_id,method,amount_cents,paid_on,reference,note,created_by,created_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (iid, method, amount, paid_on, request.form.get("reference", "").strip(),
+                     request.form.get("note", "").strip(), current_user()["id"], now_iso()))
+        set_status(con, inv, new_status, f"{money(amount)} {method} payment recorded by {current_user()['name']}",
+                   paid_delta=amount)
     flash(f"{money(amount)} payment recorded.", "ok")
     return redirect(url_for("invoice_view", iid=iid))
 
 
 @app.post("/invoices/<int:iid>/payments/<int:pid>/delete")
-@login_required(*SEE_ALL_ROLES)
+@login_required()
 def payment_delete(iid, pid):
-    get_invoice(iid)
+    inv = get_invoice(iid)
     p = q("SELECT * FROM payments WHERE id=? AND invoice_id=?", (pid, iid), one=True)
-    if p:
-        x("DELETE FROM payments WHERE id=?", (pid,))
-        add_event(iid, f"{money(p['amount_cents'])} {p['method']} payment removed by {current_user()['name']}")
-        refresh_invoice(iid)
-        flash("Payment removed.", "ok")
+    if not p:
+        abort(404)
+    try:
+        L.require(state(inv), actor(), L.REMOVE_PAYMENT)
+    except L.LifecycleError as e:
+        return refuse(iid, e)
+    new_status = L.after_payment_removed(state(inv), p["amount_cents"])
+    with db() as con:
+        con.execute("DELETE FROM payments WHERE id=?", (pid,))
+        set_status(con, inv, new_status,
+                   f"{money(p['amount_cents'])} {p['method']} payment removed by {current_user()['name']}",
+                   paid_delta=-p["amount_cents"])
+    flash("Payment removed.", "ok")
     return redirect(url_for("invoice_view", iid=iid))
 
 
@@ -831,11 +885,11 @@ def payment_delete(iid, pid):
 def invoice_duplicate(iid):
     inv = get_invoice(iid)
     s = settings()
-    today = date.today()
+    day = today()
     data = {k: inv[k] for k in ("client_name", "client_email", "client_phone", "client_address", "tax_name",
                                  "tax_rate", "notes", "terms", "etransfer_email")}
-    data.update(issue_date=today.isoformat(),
-                due_date=(today + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
+    data.update(issue_date=day.isoformat(),
+                due_date=(day + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
                 discount_cents=inv["discount_cents"], number="")
     items = [{"description": r["description"], "qty": r["qty"], "unit_cents": r["unit_cents"],
               "taxable": bool(r["taxable"]), "amount_cents": r["amount_cents"]}
@@ -846,9 +900,13 @@ def invoice_duplicate(iid):
 
 
 @app.post("/invoices/<int:iid>/delete")
-@login_required("admin")
+@login_required()
 def invoice_delete(iid):
     inv = get_invoice(iid)
+    try:
+        L.require(state(inv), actor(), L.DELETE)
+    except L.LifecycleError as e:
+        return refuse(iid, e)
     x("DELETE FROM invoices WHERE id=?", (iid,))
     flash(f"Invoice {inv['number']} deleted.", "ok")
     return redirect(url_for("dashboard"))
@@ -892,6 +950,10 @@ def send_email(to, subject, body, reply_to=None):
 @login_required()
 def invoice_email(iid):
     inv = get_invoice(iid)
+    try:
+        L.require(state(inv), actor(), L.EMAIL)
+    except L.LifecycleError as e:
+        return refuse(iid, e)
     to = request.form.get("to", "").strip() or inv["client_email"]
     if not to:
         flash("Add a client email first.", "error")
@@ -907,10 +969,9 @@ def invoice_email(iid):
         log.exception("Email failed")
         flash(f"Email failed: {e}", "error")
         return redirect(url_for("invoice_view", iid=iid))
-    if inv["status"] == "draft":
-        x("UPDATE invoices SET status='sent' WHERE id=?", (iid,))
-    x("UPDATE invoices SET sent_at=? WHERE id=?", (now_iso(), iid))
-    add_event(iid, f"Emailed to {to} by {current_user()['name']}")
+    with db() as con:
+        new_status = L.after_send(state(inv)) if inv["status"] == L.DRAFT else inv["status"]
+        set_status(con, inv, new_status, f"Emailed to {to} by {current_user()['name']}")
     flash(f"Invoice emailed to {to}.", "ok")
     return redirect(url_for("invoice_view", iid=iid))
 
@@ -939,8 +1000,8 @@ app.jinja_env.globals["helcim_ready"] = helcim_ready
 def public_invoice(token):
     inv = public_invoice_or_404(token)
     preview = can_see(inv)
-    if inv["status"] == "draft" and not preview:
-        abort(404)
+    if inv["status"] == L.DRAFT and not preview:
+        return render_template("public_invoice.html", inv=inv, updating=True, public=True)
     if not current_user() and not inv["viewed_at"]:
         x("UPDATE invoices SET viewed_at=? WHERE id=?", (now_iso(), inv["id"]))
         add_event(inv["id"], "Client opened the invoice link")
@@ -958,11 +1019,9 @@ def helcim_start(token):
     inv = public_invoice_or_404(token)
     if not helcim_ready():
         return jsonify(error="Card payments are not available."), 404
-    if inv["status"] not in ("sent", "partial"):
-        return jsonify(error="This invoice can't be paid online."), 400
-    due = inv["total_cents"] - inv["paid_cents"]
-    if due <= 0:
-        return jsonify(error="This invoice is already paid."), 400
+    if not L.client_can_pay_online(state(inv)):
+        return jsonify(error="This invoice can't be paid online right now."), 400
+    due = L.balance(state(inv))
     hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     recent = q("SELECT COUNT(*) c FROM helcim_sessions WHERE invoice_id=? AND created_at>?", (inv["id"], hour_ago),
                one=True)["c"]
@@ -1079,26 +1138,56 @@ def helcim_confirm(token):
     if status != "APPROVED" or charged <= 0:
         add_event(inv["id"], f"Helcim transaction {tid} not approved (status {status or 'unknown'})")
         return jsonify(error="The payment was not approved."), 400
-    if charged < sess["amount_cents"] and settings()["helcim_fee"] != "1":
-        log.warning("Helcim txn %s amount %s less than requested %s", tid, charged, sess["amount_cents"])
-    applied = min(charged, sess["amount_cents"])
-    note = ""
-    if charged > applied:
-        note = f"Card charged {money(charged)} incl. {money(charged - applied)} convenience fee"
+    mismatch = _txn_mismatch(source, charged, sess)
+    if mismatch:
+        log.warning("Helcim txn %s rejected for %s: %s", tid, inv["number"], mismatch)
+        add_event(inv["id"], f"Card payment claim rejected (Helcim #{tid}): {mismatch} - check Helcim")
+        return jsonify(error=fail_msg), 400
+
+    fee_on = settings()["helcim_fee"] == "1"
+    out = L.after_card_payment(state(inv), charged, fee_expected=fee_on)
+    notes = []
+    if out.extra_cents:
+        if fee_on and not out.needs_review:
+            notes.append(f"Card charged {money(charged)} incl. {money(out.extra_cents)} convenience fee")
+        else:
+            notes.append(f"Card charged {money(charged)}: {money(out.extra_cents)} above the balance")
     if not api_txn:
-        note = (note + "; " if note else "") + "verified by hash only"
+        notes.append("verified by hash only")
+    event = f"Client paid {money(out.applied_cents)} by card (Helcim #{tid})"
+    if out.needs_review:
+        reason = "invoice was void" if inv["status"] == L.VOID else f"{money(out.extra_cents)} above the balance"
+        event += f" - check: may need a refund ({reason})"
     try:
-        x("""INSERT INTO payments(invoice_id,method,amount_cents,paid_on,reference,helcim_transaction_id,note,created_at)
-             VALUES(?,?,?,?,?,?,?,?)""",
-          (inv["id"], "Helcim (card)", applied, date.today().isoformat(),
-           f"Helcim #{tid}" + (f" / approval {source.get('approvalCode')}" if source.get("approvalCode") else ""),
-           tid, note, now_iso()))
+        with db() as con:
+            con.execute("""INSERT INTO payments(invoice_id,method,amount_cents,paid_on,reference,helcim_transaction_id,
+                           note,created_at) VALUES(?,?,?,?,?,?,?,?)""",
+                        (inv["id"], "Helcim (card)", out.applied_cents, today().isoformat(),
+                         f"Helcim #{tid}" + (f" / approval {source.get('approvalCode')}"
+                                             if source.get("approvalCode") else ""),
+                         tid, "; ".join(notes), now_iso()))
+            con.execute("UPDATE helcim_sessions SET used=1 WHERE id=?", (sess["id"],))
+            set_status(con, inv, out.status, event, paid_delta=out.applied_cents)
     except sqlite3.IntegrityError:
         return jsonify(ok=True)
-    x("UPDATE helcim_sessions SET used=1 WHERE id=?", (sess["id"],))
-    add_event(inv["id"], f"Client paid {money(applied)} by card (Helcim #{tid})")
-    refresh_invoice(inv["id"])
     return jsonify(ok=True)
+
+
+def _txn_mismatch(txn, charged_cents, sess):
+    """Why a Helcim transaction can't belong to this checkout session, or '' if it can."""
+    if charged_cents < sess["amount_cents"]:
+        return f"charged {money(charged_cents)}, checkout was for {money(sess['amount_cents'])}"
+    created = str(txn.get("dateCreated") or "")[:19]
+    if created:
+        try:
+            txn_at = datetime.strptime(created, "%Y-%m-%d %H:%M:%S")
+            opened = datetime.strptime(sess["created_at"], "%Y-%m-%d %H:%M:%S")
+            # Helcim's timestamp time zone isn't documented: allow a day of slack
+            if txn_at < opened - timedelta(days=1):
+                return f"transaction from {created}, before this checkout started"
+        except ValueError:
+            pass
+    return ""
 
 
 @app.route("/uploads/<path:name>")
@@ -1240,7 +1329,7 @@ def export_csv():
                     plain_money(r["tax_cents"]), plain_money(r["total_cents"]), plain_money(r["paid_cents"]),
                     plain_money(r["total_cents"] - r["paid_cents"]), r["artist_name"]])
     return Response(out.getvalue(), mimetype="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename=invoices-{date.today()}.csv"})
+                    headers={"Content-Disposition": f"attachment; filename=invoices-{today()}.csv"})
 
 
 @app.route("/healthz")

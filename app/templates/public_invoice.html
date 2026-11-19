@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Invoice {{ inv.number }}{% endblock %}
 {% block body_class %}public{% endblock %}
-{% block head %}{% if helcim_ready() %}<script src="https://secure.helcim.app/helcim-pay/services/start.js"></script>{% endif %}{% endblock %}
+{% block head %}{% if helcim_ready() and not updating %}<script src="https://secure.helcim.app/helcim-pay/services/start.js"></script>{% endif %}{% endblock %}
 {% block content %}
-{% set balance = inv.total_cents - inv.paid_cents %}
-{% if preview %}<div class="flash info no-print">Preview — this is what your client sees{% if inv.status == 'draft' %}. Clients can't open drafts until you mark it sent{% endif %}. <a href="{{ url_for('invoice_view', iid=inv.id) }}">Back to invoice</a></div>{% endif %}
+{% if updating %}
+<div class="card" style="text-align:center;padding:2.5rem 1.5rem">
+  {% if s.logo %}<img class="login-logo" src="{{ url_for('uploads', name=s.logo) }}" alt="">{% endif %}
+  <h1>Invoice {{ inv.number }} is being updated</h1>
+  <p class="muted">{{ s.business_name }} is making changes to this invoice. Please check back soon, the same link will work.</p>
+  {% if s.business_email %}<p class="small">Questions? <a href="mailto:{{ s.business_email }}">{{ s.business_email }}</a></p>{% endif %}
+</div>
+{% else %}
+{% set balance = balance_of(inv) %}
+{% if preview %}<div class="flash info no-print">Preview — this is what your client sees{% if inv.status == 'draft' %}. While it's a draft, clients only see "being updated, check back soon"{% endif %}. <a href="{{ url_for('invoice_view', iid=inv.id) }}">Back to invoice</a></div>{% endif %}
 {% if just_paid %}<div class="flash ok no-print">Payment received — thank you! A record is shown below.</div>{% endif %}
 
 {% if inv.status == 'void' %}
@@ -39,5 +47,6 @@
 
 <div class="public-tools no-print"><button class="link" onclick="window.print()">Print or save as PDF</button></div>
 <div class="paper">{% include "_doc.html" %}</div>
+{% endif %}
 {% endblock %}
-{% block scripts %}{% if helcim_ready() %}<script>initHelcimPay();</script>{% endif %}{% endblock %}
+{% block scripts %}{% if helcim_ready() and not updating %}<script>initHelcimPay();</script>{% endif %}{% endblock %}

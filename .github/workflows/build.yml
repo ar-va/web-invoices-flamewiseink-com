@@ -27,6 +27,7 @@ jobs:
       - name: Run tests
         run: |
           pip install -q -r app/requirements.txt
+          python -I -m unittest discover -s tests -p "test_lifecycle.py"
           python -I tests/test_app.py "$PWD/app" "$RUNNER_TEMP"
 
       - name: Image name and tag

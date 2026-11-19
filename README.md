@@ -73,10 +73,13 @@ To roll back: revert the last "Deploy ..." commit on GitHub.
 
 ## Files
 
-- `app/app.py` – the application
+- `app/app.py` – the application (pages, saving, Helcim)
+- `app/lifecycle.py` – every invoice status, balance and permission rule, in one place
+- `GLOSSARY.md` – what each invoice term and status means
 - `app/templates/` – pages (`_doc.html` is the invoice layout itself)
 - `app/static/` – styles and scripts
 - `app/Dockerfile` – image recipe
 - `docker-compose.yml` – Portainer stack (image tag set by GitHub Actions)
 - `.github/workflows/build.yml` – test, build, deploy
-- `tests/test_app.py` – automated tests
+- `tests/test_lifecycle.py` – rule-by-rule tests for `lifecycle.py`
+- `tests/test_app.py` – end-to-end tests through the real pages
