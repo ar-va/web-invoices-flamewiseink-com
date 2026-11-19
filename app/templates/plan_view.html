@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Monthly billing – {{ r.client_name }}{% endblock %}
+{% block content %}
+<div class="view-head">
+  <div>
+    <a class="muted small" href="{{ url_for('plans_page') }}">← Monthly billing</a>
+    <h1>{{ r.client_name }} <span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status }}</span></h1>
+    <div class="muted">{{ plan_total(r)|money }} per month · {{ schedule_label(r.anchor_day) }} · set up by {{ r.owner_name }}</div>
+  </div>
+  <div class="btn-row">
+    {% if r.status != 'ended' %}<a class="btn ghost" href="{{ url_for('plan_edit', rid=r.id) }}">Edit</a>{% endif %}
+    {% for action, label, show in [('pause', 'Pause', r.status == 'active'), ('resume', 'Resume', r.status == 'paused'), ('stop', 'Stop billing', r.status != 'ended')] %}
+      {% if show %}
+      <form method="post" action="{{ url_for('plan_status', rid=r.id) }}" class="inline" {% if action == 'stop' %}onsubmit="return confirm('Stop monthly billing for {{ r.client_name }}? No more invoices will be created.')"{% endif %}>
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="{{ action }}">
+        <button class="btn ghost {% if action == 'stop' %}danger{% endif %}">{{ label }}</button>
+      </form>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+<div class="view-grid">
+  <div class="side">
+    <div class="card">
+      <h2>Schedule</h2>
+      <ul class="plain small">
+        <li><span class="muted">Next invoice</span><br>{{ plan_next_label(r) or ('Paused' if r.status == 'paused' else 'None – billing has ended') }}</li>
+        <li><span class="muted">First billing date</span><br>{{ r.start_date|datefmt }}</li>
+        <li><span class="muted">Stop after</span><br>{{ r.stop_after|datefmt if r.stop_after else 'Until stopped' }}</li>
+        <li><span class="muted">Emailed to</span><br>{{ r.client_email or 'No email on the client list – invoices are created but not emailed' }}</li>
+        <li><span class="muted">e-Transfer to</span><br>{{ r.etransfer_email or s.etransfer_email }}</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Each invoice</h2>
+      <ul class="plain small">
+        {% for it in items %}<li>{{ it.description }} · {{ it.qty|qty }} × {{ it.unit_cents|money }}{% if not it.taxable %} <span class="muted">(no {{ r.tax_name or 'tax' }})</span>{% endif %}</li>{% endfor %}
+        {% if r.discount_cents %}<li>Discount −{{ r.discount_cents|money }}</li>{% endif %}
+        <li><strong>Total {{ plan_total(r)|money }}</strong> <span class="muted">incl. {{ r.tax_name or 'tax' }} {{ r.tax_rate|qty }}%</span></li>
+      </ul>
+    </div>
+  </div>
+  <section class="card">
+    <h2>Invoices created</h2>
+    {% if invoices %}
+    <table class="list compact">
+      <thead><tr><th>Number</th><th>Period</th><th class="r">Total</th><th class="r">Balance</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for i in invoices %}
+        {% set st = display_status(i) %}
+        <tr><td><a href="{{ url_for('invoice_view', iid=i.id) }}">{{ i.number }}</a></td>
+            <td>{{ i.period_start|datefmt }}</td><td class="r">{{ i.total_cents|money }}</td>
+            <td class="r">{{ balance_of(i)|money }}</td><td><span class="badge {{ st }}">{{ st }}</span></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">None yet. The first one is created on {{ r.next_period_start|datefmt }}.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -8,6 +8,10 @@ Self-hosted invoice generator for the Ugreen NAS. Runs as one small container (~
 - Payment: Interac e-Transfer to pay@flamewiseink.ca by default (main; can be changed per invoice), Helcim card checkout (optional)
 - Card payments are confirmed with Helcim's API and marked paid automatically
 - e-Transfers: record them yourself with "Record a payment"
+- Shared client list: pick a client to prefill their details
+- Saved items: prepared line items anyone can add (custom lines still allowed)
+- e-Transfer email dropdown (default + other emails from Settings)
+- Monthly billing: an invoice per billing period (e.g. 15th to 14th), created, marked sent and emailed automatically on the first day
 - CSV export for bookkeeping
 
 ## How updates work
@@ -75,6 +79,8 @@ To roll back: revert the last "Deploy ..." commit on GitHub.
 
 - `app/app.py` – the application (pages, saving, Helcim)
 - `app/lifecycle.py` – every invoice status, balance and permission rule, in one place
+- `app/billing.py` – monthly billing period dates
+- `app/gunicorn.conf.py` – starts the monthly billing check (every 10 minutes, one process)
 - `GLOSSARY.md` – what each invoice term and status means
 - `app/templates/` – pages (`_doc.html` is the invoice layout itself)
 - `app/static/` – styles and scripts
@@ -82,4 +88,5 @@ To roll back: revert the last "Deploy ..." commit on GitHub.
 - `docker-compose.yml` – Portainer stack (image tag set by GitHub Actions)
 - `.github/workflows/build.yml` – test, build, deploy
 - `tests/test_lifecycle.py` – rule-by-rule tests for `lifecycle.py`
+- `tests/test_billing.py` – billing period date tests
 - `tests/test_app.py` – end-to-end tests through the real pages

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>{% block title %}Invoices{% endblock %} · {{ s.business_name }}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=3">
 <style>:root{--accent: {{ s.accent_color }};}</style>
 {% block head %}{% endblock %}
 </head>
@@ -18,6 +18,9 @@
   </a>
   <nav>
     <a href="{{ url_for('dashboard') }}">Invoices</a>
+    <a href="{{ url_for('plans_page') }}">Monthly billing</a>
+    <a href="{{ url_for('clients_page') }}">Clients</a>
+    <a href="{{ url_for('catalog_page') }}">Saved items</a>
     <a class="btn small" href="{{ url_for('invoice_new') }}">+ New invoice</a>
     {% if current_user().role == 'admin' %}
       <a href="{{ url_for('settings_page') }}">Settings</a>
@@ -37,7 +40,7 @@
   {% endwith %}
   {% block content %}{% endblock %}
 </main>
-<script src="{{ url_for('static', filename='app.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='app.js') }}?v=2"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

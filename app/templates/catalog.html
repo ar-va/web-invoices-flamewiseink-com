@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Saved items{% endblock %}
+{% block content %}
+<h1>Saved items</h1>
+<p class="muted">Prepared line items you can add to any invoice or monthly billing in one click. You can still type custom lines on every invoice.</p>
+<div class="grid2 wide-left">
+  <section class="card">
+    {% if catalog %}
+    <table class="list compact">
+      <thead><tr><th>Name / description on invoice</th><th class="w-qty">Qty</th><th class="w-price">Price</th><th class="w-tax">Tax</th><th></th></tr></thead>
+      <tbody>
+      {% for c in catalog %}
+        {% set fid = 'c-' ~ c.id %}
+        <tr>
+          <td><form id="{{ fid }}" method="post" action="{{ url_for('catalog_update', item_id=c.id) }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"></form>
+            <input name="name" form="{{ fid }}" value="{{ c.name }}" required>
+            <textarea name="description" form="{{ fid }}" rows="1" class="small" style="margin-top:.3rem">{{ c.description }}</textarea></td>
+          <td><input name="qty" form="{{ fid }}" value="{{ c.qty|qty }}" inputmode="decimal"></td>
+          <td><input name="price" form="{{ fid }}" value="{{ c.unit_cents|plain_money }}" inputmode="decimal"></td>
+          <td class="c"><input type="checkbox" name="taxable" form="{{ fid }}" {% if c.taxable %}checked{% endif %}></td>
+          <td class="nowrap"><button class="btn small" form="{{ fid }}">Save</button>
+            <button class="link small danger" form="{{ fid }}" name="delete" value="1" onclick="return confirm('Remove {{ c.name }}?')">✕</button></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">No saved items yet.</p>
+    {% endif %}
+  </section>
+  <section class="card">
+    <h2>Add saved item</h2>
+    <form method="post" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Name <span class="muted small">(shown in the picker)</span> <input name="name" required placeholder="Advertising – monthly package"></label>
+      <label>Description on invoice <span class="muted small">(blank = same as name)</span> <textarea name="description" rows="2"></textarea></label>
+      <div class="grid2 tight">
+        <label>Qty <input name="qty" value="1" inputmode="decimal"></label>
+        <label>Price <input name="price" inputmode="decimal" placeholder="0.00" required></label>
+      </div>
+      <label class="check"><input type="checkbox" name="taxable" checked> Charge {{ s.tax_name or 'tax' }}</label>
+      <button class="btn full">Add saved item</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

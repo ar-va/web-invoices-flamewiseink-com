@@ -1,0 +1,52 @@
+{# Shared line-item editor. Needs: items, catalog, editor_discount #}
+<section class="card">
+  <h2>Line items</h2>
+  {% if catalog %}
+  <div class="quick">
+    <select id="add-saved" aria-label="Add a saved item">
+      <option value="">+ Add a saved item…</option>
+      {% for c in catalog %}
+      <option data-desc="{{ c.description }}" data-qty="{{ c.qty|qty }}" data-price="{{ c.unit_cents|plain_money }}"
+              data-taxable="{{ c.taxable }}">{{ c.name }} · {{ c.unit_cents|money }}</option>
+      {% endfor %}
+    </select>
+    <a class="small muted" href="{{ url_for('catalog_page') }}" target="_blank" rel="noopener">Manage saved items</a>
+  </div>
+  {% else %}
+  <p class="small muted">Tip: add items you use often on the <a href="{{ url_for('catalog_page') }}" target="_blank" rel="noopener">Saved items</a> page to pick them here.</p>
+  {% endif %}
+  <table class="items-edit">
+    <thead><tr><th>Description</th><th class="w-qty">Qty</th><th class="w-price">Price</th><th class="w-tax">Tax</th><th class="w-amt r">Amount</th><th></th></tr></thead>
+    <tbody id="items">
+    {% for it in items %}
+      <tr class="item-row">
+        <td><textarea name="item_desc" rows="1" placeholder="e.g. Tattoo session – forearm, 3 hrs">{{ it.description }}</textarea></td>
+        <td><input name="item_qty" value="{{ it.qty }}" inputmode="decimal"></td>
+        <td><input name="item_price" value="{{ it.price }}" inputmode="decimal" placeholder="0.00"></td>
+        <td class="c"><input type="checkbox" class="tax-box" {% if it.taxable %}checked{% endif %}><input type="hidden" name="item_taxable" value="{{ '1' if it.taxable else '0' }}"></td>
+        <td class="r amt">$0.00</td>
+        <td><button type="button" class="link remove" title="Remove line">✕</button></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <button type="button" class="btn ghost" id="add-item">+ Add custom line</button>
+
+  <div class="totals-edit">
+    <div><span>Subtotal</span><span id="t-sub">$0.00</span></div>
+    <div><span>Discount $</span><input name="discount" value="{{ editor_discount or '' }}" inputmode="decimal" placeholder="0.00" id="discount"></div>
+    <div><span id="t-tax-label">Tax</span><span id="t-tax">$0.00</span></div>
+    <div class="grand"><span>Total</span><span id="t-total">$0.00</span></div>
+  </div>
+</section>
+
+<template id="row-template">
+  <tr class="item-row">
+    <td><textarea name="item_desc" rows="1"></textarea></td>
+    <td><input name="item_qty" value="1" inputmode="decimal"></td>
+    <td><input name="item_price" inputmode="decimal" placeholder="0.00"></td>
+    <td class="c"><input type="checkbox" class="tax-box" checked><input type="hidden" name="item_taxable" value="1"></td>
+    <td class="r amt">$0.00</td>
+    <td><button type="button" class="link remove" title="Remove line">✕</button></td>
+  </tr>
+</template>

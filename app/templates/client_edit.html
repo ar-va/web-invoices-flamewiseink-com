@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ c.name }}{% endblock %}
+{% block main_class %}narrow{% endblock %}
+{% block content %}
+<a class="muted small" href="{{ url_for('clients_page') }}">← Clients</a>
+<h1>Edit client</h1>
+<form method="post" class="card stack">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <label>Name <input name="name" value="{{ c.name }}" required></label>
+  <label>Email <input type="email" name="email" value="{{ c.email or '' }}"></label>
+  <label>Phone <input name="phone" value="{{ c.phone or '' }}"></label>
+  <label>Address <textarea name="address" rows="2">{{ c.address or '' }}</textarea></label>
+  <label>Notes <span class="muted small">(only staff see these)</span> <textarea name="notes" rows="3">{{ c.notes or '' }}</textarea></label>
+  <p class="small muted">Changes apply to new invoices and monthly billing. Invoices already created keep the details they were sent with.</p>
+  <button class="btn">Save client</button>
+</form>
+<form method="post" action="{{ url_for('client_delete', cid=c.id) }}" onsubmit="return confirm('Remove {{ c.name }} from the client list? Their invoices are kept.')">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <button class="link small danger">Remove from client list</button>
+</form>
+{% endblock %}

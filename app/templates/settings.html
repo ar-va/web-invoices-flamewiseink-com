@@ -50,17 +50,16 @@
       <label>Default notes <textarea name="default_notes" rows="3">{{ s.default_notes }}</textarea></label>
       <label>Default terms <textarea name="default_terms" rows="3" placeholder="e.g. Deposits are non-refundable.">{{ s.default_terms }}</textarea></label>
     </div>
-    <label>Quick-add items <span class="muted small">— one per line: <code>Description | price</code></span>
-      <textarea name="quick_items" rows="4" placeholder="Tattoo session (hourly) | 150.00&#10;Deposit | 100.00&#10;Touch-up | 0.00">{{ s.quick_items }}</textarea></label>
+    <p class="small muted">Prepared line items now live on the <a href="{{ url_for('catalog_page') }}">Saved items</a> page.</p>
   </section>
 
-  <section class="card">
+  <section class="card" id="payments">
     <h2>Payments</h2>
     <div class="grid2">
       <div>
         <label class="check"><input type="checkbox" name="etransfer_enabled" {% if s.etransfer_enabled == '1' %}checked{% endif %}> Show Interac e-Transfer instructions</label>
         <label>Default e-Transfer email <input name="etransfer_email" value="{{ s.etransfer_email }}"></label>
-        <label>Other e-Transfer emails <span class="muted small">— one per line, offered on each invoice</span>
+        <label>Other e-Transfer emails <span class="muted small">— one per line, shown in the e-Transfer dropdown on invoices</span>
           <textarea name="etransfer_emails" rows="3" placeholder="artist@example.com&#10;deposits@flamewiseink.ca">{{ s.etransfer_emails }}</textarea></label>
         <label>Instructions <textarea name="etransfer_instructions" rows="4">{{ s.etransfer_instructions }}</textarea></label>
         <p class="small muted">Placeholders: {amount} {email} {number} {balance} {total} {due_date} {client} {business}</p>

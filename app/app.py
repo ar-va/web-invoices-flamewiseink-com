@@ -30,6 +30,7 @@ from flask import (Flask, Response, abort, flash, g, jsonify, redirect,
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import billing as B
 import lifecycle as L
 
 # --------------------------------------------------------------------------
@@ -156,6 +157,25 @@ CREATE TABLE IF NOT EXISTS helcim_sessions(
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY, invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   at TEXT NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS clients(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, phone TEXT, address TEXT, notes TEXT,
+  created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_name ON clients(name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS catalog(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, qty TEXT NOT NULL DEFAULT '1',
+  unit_cents INTEGER NOT NULL DEFAULT 0, taxable INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS recurring(
+  id INTEGER PRIMARY KEY, client_id INTEGER NOT NULL REFERENCES clients(id),
+  start_date TEXT NOT NULL, anchor_day INTEGER NOT NULL, next_period_start TEXT NOT NULL, stop_after TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  tax_name TEXT, tax_rate TEXT NOT NULL DEFAULT '0', discount_cents INTEGER NOT NULL DEFAULT 0,
+  notes TEXT, terms TEXT, etransfer_email TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS recurring_items(
+  id INTEGER PRIMARY KEY, recurring_id INTEGER NOT NULL REFERENCES recurring(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL, description TEXT NOT NULL, qty TEXT NOT NULL,
+  unit_cents INTEGER NOT NULL, taxable INTEGER NOT NULL DEFAULT 1);
 CREATE INDEX IF NOT EXISTS idx_items_inv ON items(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_pay_inv ON payments(invoice_id);
 """
@@ -165,12 +185,43 @@ def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _seed_once(con):
+    """One-time moves: past invoice clients -> client list, Settings quick items -> saved items."""
+    done = {r[0] for r in con.execute("SELECT key FROM settings WHERE key LIKE 'seeded_%'")}
+    ts = now_iso()
+    if "seeded_clients" not in done:
+        con.execute("""INSERT OR IGNORE INTO clients(name,email,phone,address,created_by,created_at,updated_at)
+                       SELECT client_name, client_email, client_phone, client_address, created_by, ?, ?
+                       FROM invoices WHERE id IN (SELECT MAX(id) FROM invoices GROUP BY lower(client_name))""",
+                    (ts, ts))
+        con.execute("UPDATE invoices SET client_id=(SELECT id FROM clients c WHERE c.name=invoices.client_name "
+                    "COLLATE NOCASE) WHERE client_id IS NULL")
+        con.execute("INSERT INTO settings(key,value) VALUES('seeded_clients','1')")
+    if "seeded_catalog" not in done:
+        row = con.execute("SELECT value FROM settings WHERE key='quick_items'").fetchone()
+        for line in (row[0] if row else "").splitlines():
+            if "|" in line:
+                d, price = (part.strip() for part in line.rsplit("|", 1))
+                try:
+                    cents = to_cents(price)
+                except ValueError:
+                    cents = 0
+                if d:
+                    con.execute("INSERT INTO catalog(name,description,unit_cents,created_at,updated_at) "
+                                "VALUES(?,?,?,?,?)", (d, d, cents, ts, ts))
+        con.execute("INSERT INTO settings(key,value) VALUES('seeded_catalog','1')")
+
+
 def bootstrap():
     con = sqlite3.connect(DB_PATH)
     con.executescript(SCHEMA)
     cols = {r[1] for r in con.execute("PRAGMA table_info(invoices)")}
-    if "etransfer_email" not in cols:
-        con.execute("ALTER TABLE invoices ADD COLUMN etransfer_email TEXT")
+    for col in ("etransfer_email TEXT", "client_id INTEGER", "recurring_id INTEGER", "period_start TEXT"):
+        if col.split()[0] not in cols:
+            con.execute(f"ALTER TABLE invoices ADD COLUMN {col}")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_inv_period ON invoices(recurring_id, period_start) "
+                "WHERE recurring_id IS NOT NULL")
+    _seed_once(con)
     for old, new in OLD_ROLE_NAMES.items():
         con.execute("UPDATE users SET role=? WHERE role=?", (new, old))
     count = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -188,8 +239,6 @@ def bootstrap():
     con.commit()
     con.close()
 
-
-bootstrap()
 
 # --------------------------------------------------------------------------
 # DB helpers
@@ -276,6 +325,9 @@ def to_decimal(value, what="number"):
     if not d.is_finite():
         raise ValueError(f"'{value}' is not a valid {what}")
     return d
+
+
+bootstrap()   # needs to_cents for one-time moves
 
 
 @app.template_filter("money")
@@ -611,7 +663,18 @@ def parse_invoice_form(form):
         errors.append(f"Discount: {e}")
         data["discount_cents"] = 0
 
-    items = []
+    items, item_errors = parse_items(form)
+    errors += item_errors
+    data["save_client"] = form.get("save_client") == "1"
+    return data, items, errors
+
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def parse_items(form):
+    """Line items from the shared editor. Returns (items, errors)."""
+    items, errors = [], []
     descs = form.getlist("item_desc")
     qtys = form.getlist("item_qty")
     prices = form.getlist("item_price")
@@ -637,25 +700,22 @@ def parse_invoice_form(form):
         items.append(row)
     if not items:
         errors.append("Add at least one line item.")
-    return data, items, errors
+    return items, errors
+
+
+def client_map():
+    """Shared client list for prefilling: name -> contact details."""
+    return {r["name"]: {"id": r["id"], "email": r["email"] or "", "phone": r["phone"] or "",
+                        "address": r["address"] or ""}
+            for r in q("SELECT * FROM clients ORDER BY name COLLATE NOCASE LIMIT 5000")}
+
+
+def catalog_items():
+    return q("SELECT * FROM catalog ORDER BY name COLLATE NOCASE")
 
 
 def _form_context(inv, items, is_new):
-    where, args = "", ()
-    if not sees_all():
-        where, args = "WHERE created_by=?", (current_user()["id"],)
-    past_clients = q(f"""SELECT client_name, client_email, client_phone, client_address FROM invoices
-                        WHERE id IN (SELECT MAX(id) FROM invoices {where} GROUP BY lower(client_name))
-                        ORDER BY client_name LIMIT 1000""", args)
-    clients = {r["client_name"]: {"email": r["client_email"] or "", "phone": r["client_phone"] or "",
-                                  "address": r["client_address"] or ""} for r in past_clients}
-    quick = []
-    for line in settings()["quick_items"].splitlines():
-        if "|" in line:
-            d, p = line.rsplit("|", 1)
-            if d.strip():
-                quick.append({"description": d.strip(), "price": p.strip()})
-    return dict(inv=inv, items=items, is_new=is_new, clients=clients, quick_items=quick)
+    return dict(inv=inv, items=items, is_new=is_new, clients=client_map(), catalog=catalog_items())
 
 
 @app.route("/invoices/new", methods=["GET", "POST"])
@@ -672,8 +732,10 @@ def invoice_new():
         flash("Invoice created.", "ok")
         return redirect(url_for("invoice_view", iid=iid))
     day = today()
+    c = q("SELECT * FROM clients WHERE id=?", (request.args.get("client_id", type=int),), one=True)
     inv = {
-        "client_name": request.args.get("client", ""), "client_email": "", "client_phone": "", "client_address": "",
+        "client_name": c["name"] if c else "", "client_email": (c["email"] if c else "") or "",
+        "client_phone": (c["phone"] if c else "") or "", "client_address": (c["address"] if c else "") or "",
         "issue_date": day.isoformat(),
         "due_date": (day + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
         "tax_name": s["tax_name"], "tax_rate": s["tax_rate"], "notes": s["default_notes"], "terms": s["default_terms"],
@@ -723,52 +785,90 @@ def invoice_edit(iid):
     return render_template("invoice_form.html", **_form_context(data, items, False))
 
 
+def _next_number(con):
+    row = con.execute("SELECT value FROM settings WHERE key='next_number'").fetchone()
+    nxt = int(row[0]) if row else int(DEFAULTS["next_number"])
+    prefix = settings()["invoice_prefix"]
+    number = f"{prefix}{nxt}"
+    while con.execute("SELECT 1 FROM invoices WHERE number=?", (number,)).fetchone():
+        nxt += 1
+        number = f"{prefix}{nxt}"
+    con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('next_number',?)", (str(nxt + 1),))
+    return number
+
+
+def _client_id_for(con, data, user_id):
+    """Link to a saved client by name; add a new one if asked."""
+    row = con.execute("SELECT id FROM clients WHERE name=? COLLATE NOCASE", (data["client_name"],)).fetchone()
+    if row:
+        return row[0]
+    if data.get("save_client"):
+        ts = now_iso()
+        cur = con.execute("INSERT INTO clients(name,email,phone,address,created_by,created_at,updated_at) "
+                          "VALUES(?,?,?,?,?,?,?)", (data["client_name"], data["client_email"], data["client_phone"],
+                                                    data["client_address"], user_id, ts, ts))
+        return cur.lastrowid
+    return None
+
+
+def _insert_invoice(con, data, items, owner_id, status, created_event, recurring_id=None, period_start=None):
+    """Insert a new invoice and its line items inside the caller's transaction."""
+    totals = compute_totals(items, data["tax_rate"], data["discount_cents"])
+    ts = now_iso()
+    sent_at = ts if status in (L.SENT, L.PARTIAL, L.PAID) else None
+    cur = con.execute(
+        """INSERT INTO invoices(number,token,status,client_name,client_email,client_phone,client_address,client_id,
+           issue_date,due_date,tax_name,tax_rate,discount_cents,notes,terms,subtotal_cents,tax_cents,total_cents,
+           etransfer_email,created_by,created_at,updated_at,sent_at,paid_at,recurring_id,period_start)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (_next_number(con), secrets.token_urlsafe(18), status, data["client_name"], data["client_email"],
+         data["client_phone"], data["client_address"], data.get("client_id"), data["issue_date"], data["due_date"],
+         data["tax_name"], data["tax_rate"], totals["discount"], data["notes"], data["terms"], totals["subtotal"],
+         totals["tax"], totals["total"], data.get("etransfer_email") or None, owner_id, ts, ts, sent_at,
+         ts if status == L.PAID else None, recurring_id, period_start))
+    iid = cur.lastrowid
+    _insert_items(con, "items", "invoice_id", iid, items, with_amount=True)
+    add_event(iid, created_event, con)
+    if status == L.PAID:
+        add_event(iid, "Paid in full", con)
+    return iid
+
+
+def _insert_items(con, table, key, owner_id, items, with_amount):
+    for pos, it in enumerate(items):
+        cols = f"{key},position,description,qty,unit_cents,taxable" + (",amount_cents" if with_amount else "")
+        vals = [owner_id, pos, it["description"], it["qty"], it["unit_cents"], 1 if it["taxable"] else 0]
+        if with_amount:
+            vals.append(it["amount_cents"])
+        con.execute(f"INSERT INTO {table}({cols}) VALUES({','.join('?' * len(vals))})", vals)
+
+
 def save_invoice(iid, data, items, old=None, new_status=L.DRAFT):
     """Create (iid=None) or update an invoice and its line items in one transaction."""
     totals = compute_totals(items, data["tax_rate"], data["discount_cents"])
     con = db()
     ts = now_iso()
-    who = current_user()["name"]
+    user = current_user()
     with con:
+        data["client_id"] = _client_id_for(con, data, user["id"])
         if iid is None:
-            row = con.execute("SELECT value FROM settings WHERE key='next_number'").fetchone()
-            nxt = int(row[0]) if row else int(DEFAULTS["next_number"])
-            prefix = settings()["invoice_prefix"]
-            number = f"{prefix}{nxt}"
-            while con.execute("SELECT 1 FROM invoices WHERE number=?", (number,)).fetchone():
-                nxt += 1
-                number = f"{prefix}{nxt}"
-            con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('next_number',?)", (str(nxt + 1),))
-            cur = con.execute(
-                """INSERT INTO invoices(number,token,status,client_name,client_email,client_phone,client_address,
-                   issue_date,due_date,tax_name,tax_rate,discount_cents,notes,terms,subtotal_cents,tax_cents,total_cents,
-                   created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (number, secrets.token_urlsafe(18), L.DRAFT, data["client_name"], data["client_email"],
-                 data["client_phone"], data["client_address"], data["issue_date"], data["due_date"], data["tax_name"],
-                 data["tax_rate"], totals["discount"], data["notes"], data["terms"], totals["subtotal"],
-                 totals["tax"], totals["total"], current_user()["id"], ts, ts))
-            iid = cur.lastrowid
-            add_event(iid, f"Created by {who}", con)
+            iid = _insert_invoice(con, data, items, user["id"], L.DRAFT, f"Created by {user['name']}")
         else:
             number = data["number"] or old["number"]
             con.execute(
-                """UPDATE invoices SET number=?,client_name=?,client_email=?,client_phone=?,client_address=?,issue_date=?,
-                   due_date=?,tax_name=?,tax_rate=?,discount_cents=?,notes=?,terms=?,subtotal_cents=?,tax_cents=?,
-                   total_cents=?,updated_at=? WHERE id=?""",
+                """UPDATE invoices SET number=?,client_name=?,client_email=?,client_phone=?,client_address=?,client_id=?,
+                   issue_date=?,due_date=?,tax_name=?,tax_rate=?,discount_cents=?,notes=?,terms=?,subtotal_cents=?,
+                   tax_cents=?,total_cents=?,etransfer_email=?,updated_at=? WHERE id=?""",
                 (number, data["client_name"], data["client_email"], data["client_phone"], data["client_address"],
-                 data["issue_date"], data["due_date"], data["tax_name"], data["tax_rate"], totals["discount"],
-                 data["notes"], data["terms"], totals["subtotal"], totals["tax"], totals["total"], ts, iid))
+                 data["client_id"], data["issue_date"], data["due_date"], data["tax_name"], data["tax_rate"],
+                 totals["discount"], data["notes"], data["terms"], totals["subtotal"], totals["tax"], totals["total"],
+                 data.get("etransfer_email") or None, ts, iid))
             con.execute("DELETE FROM items WHERE invoice_id=?", (iid,))
+            _insert_items(con, "items", "invoice_id", iid, items, with_amount=True)
             change = (f" (total {money(old['total_cents'])} → {money(totals['total'])})"
                       if old["total_cents"] != totals["total"] else "")
-            add_event(iid, f"Edited by {who}{change}", con)
+            add_event(iid, f"Edited by {user['name']}{change}", con)
             set_status(con, old, new_status)
-        con.execute("UPDATE invoices SET etransfer_email=? WHERE id=?", (data.get("etransfer_email") or None, iid))
-        for pos, it in enumerate(items):
-            con.execute("""INSERT INTO items(invoice_id,position,description,qty,unit_cents,taxable,amount_cents)
-                           VALUES(?,?,?,?,?,?,?)""",
-                        (iid, pos, it["description"], it["qty"], it["unit_cents"], 1 if it["taxable"] else 0,
-                         it["amount_cents"]))
     g.pop("settings", None)
     return iid
 
@@ -890,7 +990,7 @@ def invoice_duplicate(iid):
                                  "tax_rate", "notes", "terms", "etransfer_email")}
     data.update(issue_date=day.isoformat(),
                 due_date=(day + timedelta(days=int(s["default_due_days"] or 0))).isoformat(),
-                discount_cents=inv["discount_cents"], number="")
+                discount_cents=inv["discount_cents"], number="", save_client=False)
     items = [{"description": r["description"], "qty": r["qty"], "unit_cents": r["unit_cents"],
               "taxable": bool(r["taxable"]), "amount_cents": r["amount_cents"]}
              for r in q("SELECT * FROM items WHERE invoice_id=? ORDER BY position", (iid,))]
@@ -1190,6 +1290,453 @@ def _txn_mismatch(txn, charged_cents, sess):
     return ""
 
 
+# --------------------------------------------------------------------------
+# Clients (shared list: everyone adds, Admin + Studio Manager edit/delete)
+# --------------------------------------------------------------------------
+
+
+def _client_form(form):
+    data = {k: form.get(k, "").strip() for k in ("name", "email", "phone", "address", "notes")}
+    errors = []
+    if not data["name"]:
+        errors.append("Client name is required.")
+    if data["email"] and not EMAIL_RE.match(data["email"]):
+        errors.append("Client email doesn't look right.")
+    return data, errors
+
+
+@app.route("/clients", methods=["GET", "POST"])
+@login_required()
+def clients_page():
+    if request.method == "POST":
+        data, errors = _client_form(request.form)
+        if not errors and q("SELECT 1 FROM clients WHERE name=? COLLATE NOCASE", (data["name"],), one=True):
+            errors.append(f"{data['name']} is already in the client list.")
+        if errors:
+            for e in errors:
+                flash(e, "error")
+        else:
+            ts = now_iso()
+            x("INSERT INTO clients(name,email,phone,address,notes,created_by,created_at,updated_at) "
+              "VALUES(?,?,?,?,?,?,?,?)", (data["name"], data["email"], data["phone"], data["address"], data["notes"],
+                                          current_user()["id"], ts, ts))
+            flash(f"{data['name']} added to clients.", "ok")
+        return redirect(url_for("clients_page"))
+    search = request.args.get("q", "").strip()
+    where, args = "", []
+    if search:
+        where = "WHERE c.name LIKE ? OR c.email LIKE ? OR c.phone LIKE ?"
+        args = [f"%{search}%"] * 3
+    rows = q(f"""SELECT c.*, (SELECT COUNT(*) FROM invoices i WHERE i.client_id=c.id) AS invoice_count,
+                        (SELECT COUNT(*) FROM recurring r WHERE r.client_id=c.id AND r.status!='ended') AS plan_count
+                 FROM clients c {where} ORDER BY c.name COLLATE NOCASE LIMIT 1000""", args)
+    return render_template("clients.html", clients=rows, search=search)
+
+
+@app.route("/clients/<int:cid>/edit", methods=["GET", "POST"])
+@login_required(*SEE_ALL_ROLES)
+def client_edit(cid):
+    c = q("SELECT * FROM clients WHERE id=?", (cid,), one=True)
+    if not c:
+        abort(404)
+    if request.method == "POST":
+        data, errors = _client_form(request.form)
+        if not errors and q("SELECT 1 FROM clients WHERE name=? COLLATE NOCASE AND id<>?", (data["name"], cid), one=True):
+            errors.append(f"{data['name']} is already in the client list.")
+        if errors:
+            for e in errors:
+                flash(e, "error")
+            return render_template("client_edit.html", c=dict(c, **data)), 400
+        x("UPDATE clients SET name=?,email=?,phone=?,address=?,notes=?,updated_at=? WHERE id=?",
+          (data["name"], data["email"], data["phone"], data["address"], data["notes"], now_iso(), cid))
+        flash("Client saved. Existing invoices keep the details they were sent with.", "ok")
+        return redirect(url_for("clients_page"))
+    return render_template("client_edit.html", c=c)
+
+
+@app.post("/clients/<int:cid>/delete")
+@login_required(*SEE_ALL_ROLES)
+def client_delete(cid):
+    c = q("SELECT * FROM clients WHERE id=?", (cid,), one=True)
+    if not c:
+        abort(404)
+    if q("SELECT 1 FROM recurring WHERE client_id=? AND status!='ended'", (cid,), one=True):
+        flash(f"{c['name']} has active monthly billing. Stop it first.", "error")
+        return redirect(url_for("client_edit", cid=cid))
+    with db() as con:
+        con.execute("UPDATE invoices SET client_id=NULL WHERE client_id=?", (cid,))
+        con.execute("DELETE FROM recurring_items WHERE recurring_id IN (SELECT id FROM recurring WHERE client_id=?)", (cid,))
+        con.execute("DELETE FROM recurring WHERE client_id=?", (cid,))
+        con.execute("DELETE FROM clients WHERE id=?", (cid,))
+    flash(f"{c['name']} removed from clients. Their invoices are kept.", "ok")
+    return redirect(url_for("clients_page"))
+
+
+# --------------------------------------------------------------------------
+# Saved line items (everyone can manage)
+# --------------------------------------------------------------------------
+
+
+def _catalog_form(form):
+    errors = []
+    data = {"name": form.get("name", "").strip(), "description": form.get("description", "").strip(),
+            "taxable": 1 if form.get("taxable") else 0}
+    if not data["name"]:
+        errors.append("Give the saved item a name.")
+    data["description"] = data["description"] or data["name"]
+    try:
+        data["qty"] = str(to_decimal(form.get("qty") or "1", "quantity"))
+        data["unit_cents"] = max(0, to_cents(form.get("price")))
+    except ValueError as e:
+        errors.append(str(e))
+    return data, errors
+
+
+@app.route("/items", methods=["GET", "POST"])
+@login_required()
+def catalog_page():
+    if request.method == "POST":
+        data, errors = _catalog_form(request.form)
+        if errors:
+            for e in errors:
+                flash(e, "error")
+        else:
+            ts = now_iso()
+            x("INSERT INTO catalog(name,description,qty,unit_cents,taxable,created_by,created_at,updated_at) "
+              "VALUES(?,?,?,?,?,?,?,?)", (data["name"], data["description"], data["qty"], data["unit_cents"],
+                                          data["taxable"], current_user()["id"], ts, ts))
+            flash(f"Saved item '{data['name']}' added.", "ok")
+        return redirect(url_for("catalog_page"))
+    return render_template("catalog.html", catalog=catalog_items())
+
+
+@app.post("/items/<int:item_id>")
+@login_required()
+def catalog_update(item_id):
+    if not q("SELECT 1 FROM catalog WHERE id=?", (item_id,), one=True):
+        abort(404)
+    if request.form.get("delete"):
+        x("DELETE FROM catalog WHERE id=?", (item_id,))
+        flash("Saved item removed.", "ok")
+        return redirect(url_for("catalog_page"))
+    data, errors = _catalog_form(request.form)
+    if errors:
+        for e in errors:
+            flash(e, "error")
+    else:
+        x("UPDATE catalog SET name=?,description=?,qty=?,unit_cents=?,taxable=?,updated_at=? WHERE id=?",
+          (data["name"], data["description"], data["qty"], data["unit_cents"], data["taxable"], now_iso(), item_id))
+        flash(f"Saved item '{data['name']}' updated.", "ok")
+    return redirect(url_for("catalog_page"))
+
+
+# --------------------------------------------------------------------------
+# Monthly billing (recurring invoices)
+# --------------------------------------------------------------------------
+
+
+def plan_or_404(rid):
+    r = q("""SELECT r.*, c.name AS client_name, c.email AS client_email, u.name AS owner_name
+             FROM recurring r JOIN clients c ON c.id=r.client_id LEFT JOIN users u ON u.id=r.created_by
+             WHERE r.id=?""", (rid,), one=True)
+    if not r:
+        abort(404)
+    if not (sees_all() or r["created_by"] == current_user()["id"]):
+        abort(403)
+    return r
+
+
+def plan_items(rid):
+    rows = q("SELECT * FROM recurring_items WHERE recurring_id=? ORDER BY position", (rid,))
+    return [{"description": r["description"], "qty": r["qty"], "unit_cents": r["unit_cents"],
+             "taxable": bool(r["taxable"]),
+             "amount_cents": int((Decimal(r["qty"]) * r["unit_cents"]).quantize(Decimal("1"), rounding=ROUND_HALF_UP))}
+            for r in rows]
+
+
+def plan_total(r):
+    return compute_totals(plan_items(r["id"]), r["tax_rate"], r["discount_cents"])["total"]
+
+
+def plan_next_label(r):
+    if r["status"] != "active":
+        return ""
+    nxt = date.fromisoformat(r["next_period_start"])
+    if r["stop_after"] and nxt > date.fromisoformat(r["stop_after"]):
+        return ""
+    return f"{datefmt(nxt.isoformat())} ({B.period_label(r['anchor_day'], nxt)})"
+
+
+app.jinja_env.globals.update(plan_total=plan_total, plan_next_label=plan_next_label,
+                             schedule_label=B.schedule_label)
+
+
+def _parse_plan_form(form):
+    errors = []
+    data = {k: form.get(k, "").strip() for k in ("tax_name", "notes", "terms", "etransfer_email",
+                                                  "start_date", "stop_after", "discount")}
+    data["client_id"] = form.get("client_id", type=int)
+    data["tax_rate"] = form.get("tax_rate", "0").strip() or "0"
+    if not data["client_id"] or not q("SELECT 1 FROM clients WHERE id=?", (data["client_id"],), one=True):
+        errors.append("Choose a client from the client list.")
+    try:
+        data["start"] = date.fromisoformat(data["start_date"])
+    except ValueError:
+        errors.append("First billing date is missing or invalid.")
+        data["start"] = None
+    data["stop"] = None
+    if data["stop_after"]:
+        try:
+            data["stop"] = date.fromisoformat(data["stop_after"])
+        except ValueError:
+            errors.append("Stop date is invalid.")
+    if data["stop"] and data["start"] and data["stop"] < data["start"]:
+        errors.append("The stop date is before the first billing date.")
+    if data["etransfer_email"] and not EMAIL_RE.match(data["etransfer_email"]):
+        errors.append("e-Transfer email doesn't look right.")
+    try:
+        rate = to_decimal(data["tax_rate"], "tax rate")
+        if rate < 0 or rate > 100:
+            raise ValueError("Tax rate must be between 0 and 100.")
+        data["tax_rate"] = str(rate)
+    except ValueError as e:
+        errors.append(str(e))
+    try:
+        data["discount_cents"] = max(0, to_cents(data["discount"]))
+    except ValueError as e:
+        errors.append(f"Discount: {e}")
+        data["discount_cents"] = 0
+    items, item_errors = parse_items(form)
+    return data, items, errors + item_errors
+
+
+def _plan_form_context(plan, items, is_new, locked_start=False):
+    return dict(plan=plan, items=items, is_new=is_new, locked_start=locked_start,
+                clients=q("SELECT id, name, email FROM clients ORDER BY name COLLATE NOCASE"),
+                catalog=catalog_items())
+
+
+@app.route("/billing")
+@login_required()
+def plans_page():
+    where, args = "", []
+    if not sees_all():
+        where, args = "WHERE r.created_by=?", [current_user()["id"]]
+    plans = q(f"""SELECT r.*, c.name AS client_name, u.name AS owner_name FROM recurring r
+                  JOIN clients c ON c.id=r.client_id LEFT JOIN users u ON u.id=r.created_by {where}
+                  ORDER BY CASE r.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                           r.next_period_start""", args)
+    return render_template("plans.html", plans=plans)
+
+
+@app.route("/billing/new", methods=["GET", "POST"])
+@login_required()
+def plan_new():
+    if request.method == "POST":
+        data, items, errors = _parse_plan_form(request.form)
+        if errors:
+            for e in errors:
+                flash(e, "error")
+            return render_template("plan_form.html", **_plan_form_context(data, items, True)), 400
+        ts = now_iso()
+        first = B.first_period_start(data["start"], today())
+        with db() as con:
+            cur = con.execute(
+                """INSERT INTO recurring(client_id,start_date,anchor_day,next_period_start,stop_after,status,tax_name,
+                   tax_rate,discount_cents,notes,terms,etransfer_email,created_by,created_at,updated_at)
+                   VALUES(?,?,?,?,?,'active',?,?,?,?,?,?,?,?,?)""",
+                (data["client_id"], data["start"].isoformat(), data["start"].day, first.isoformat(),
+                 data["stop"].isoformat() if data["stop"] else None, data["tax_name"], data["tax_rate"],
+                 data["discount_cents"], data["notes"], data["terms"], data["etransfer_email"] or None,
+                 current_user()["id"], ts, ts))
+            rid = cur.lastrowid
+            _insert_items(con, "recurring_items", "recurring_id", rid, items, with_amount=False)
+        made = run_billing()
+        msg = "Monthly billing set up."
+        if made:
+            msg += f" The first invoice ({len(made)}) was created and sent now."
+        flash(msg, "ok")
+        return redirect(url_for("plan_view", rid=rid))
+    s = settings()
+    plan = {"client_id": request.args.get("client_id", type=int), "start_date": today().isoformat(),
+            "stop_after": "", "tax_name": s["tax_name"], "tax_rate": s["tax_rate"], "discount": "",
+            "notes": s["default_notes"], "terms": s["default_terms"], "etransfer_email": s["etransfer_email"]}
+    return render_template("plan_form.html", **_plan_form_context(
+        plan, [{"description": "", "qty": "1", "price": "", "taxable": True}], True))
+
+
+@app.route("/billing/<int:rid>")
+@login_required()
+def plan_view(rid):
+    r = plan_or_404(rid)
+    invoices = q("SELECT * FROM invoices WHERE recurring_id=? ORDER BY period_start DESC", (rid,))
+    return render_template("plan_view.html", r=r, items=plan_items(rid), invoices=invoices)
+
+
+@app.route("/billing/<int:rid>/edit", methods=["GET", "POST"])
+@login_required()
+def plan_edit(rid):
+    r = plan_or_404(rid)
+    if r["status"] == "ended":
+        flash("This monthly billing has ended. Set up a new one instead.", "error")
+        return redirect(url_for("plan_view", rid=rid))
+    has_invoices = bool(q("SELECT 1 FROM invoices WHERE recurring_id=?", (rid,), one=True))
+    if request.method == "POST":
+        form = request.form.copy()
+        if has_invoices:
+            form["start_date"] = r["start_date"]          # schedule is fixed once billing started
+        data, items, errors = _parse_plan_form(form)
+        if errors:
+            for e in errors:
+                flash(e, "error")
+            return render_template("plan_form.html", **_plan_form_context(dict(data, id=rid), items, False,
+                                                                          has_invoices)), 400
+        nxt = r["next_period_start"]
+        if not has_invoices:
+            nxt = B.first_period_start(data["start"], today()).isoformat()
+        with db() as con:
+            con.execute("""UPDATE recurring SET client_id=?,start_date=?,anchor_day=?,next_period_start=?,stop_after=?,
+                           tax_name=?,tax_rate=?,discount_cents=?,notes=?,terms=?,etransfer_email=?,updated_at=?
+                           WHERE id=?""",
+                        (data["client_id"], data["start"].isoformat(), data["start"].day, nxt,
+                         data["stop"].isoformat() if data["stop"] else None, data["tax_name"], data["tax_rate"],
+                         data["discount_cents"], data["notes"], data["terms"], data["etransfer_email"] or None,
+                         now_iso(), rid))
+            con.execute("DELETE FROM recurring_items WHERE recurring_id=?", (rid,))
+            _insert_items(con, "recurring_items", "recurring_id", rid, items, with_amount=False)
+        run_billing()
+        flash("Saved. Invoices already created keep their original details.", "ok")
+        return redirect(url_for("plan_view", rid=rid))
+    plan = dict(r)
+    plan["discount"] = plain_money(r["discount_cents"]) if r["discount_cents"] else ""
+    items = [{"description": i["description"], "qty": fmt_qty(i["qty"]), "price": plain_money(i["unit_cents"]),
+              "taxable": i["taxable"]} for i in plan_items(rid)]
+    return render_template("plan_form.html", **_plan_form_context(plan, items, False, has_invoices))
+
+
+@app.post("/billing/<int:rid>/status")
+@login_required()
+def plan_status(rid):
+    r = plan_or_404(rid)
+    action = request.form.get("action")
+    if action == "pause" and r["status"] == "active":
+        x("UPDATE recurring SET status='paused', updated_at=? WHERE id=?", (now_iso(), rid))
+        flash("Paused. No invoices will be created until you resume.", "ok")
+    elif action == "resume" and r["status"] == "paused":
+        # skip periods that started while paused
+        nxt = max(date.fromisoformat(r["next_period_start"]),
+                  B.first_period_start(date.fromisoformat(r["start_date"]), today()))
+        x("UPDATE recurring SET status='active', next_period_start=?, updated_at=? WHERE id=?",
+          (nxt.isoformat(), now_iso(), rid))
+        made = run_billing()
+        flash("Resumed." + (" This month's invoice was created and sent." if made else ""), "ok")
+    elif action == "stop" and r["status"] != "ended":
+        x("UPDATE recurring SET status='ended', updated_at=? WHERE id=?", (now_iso(), rid))
+        flash("Monthly billing stopped. Invoices already sent are not affected.", "ok")
+    return redirect(url_for("plan_view", rid=rid))
+
+
+@app.post("/billing/run")
+@login_required(*SEE_ALL_ROLES)
+def plans_run():
+    made = run_billing()
+    flash(f"Billing check done: {len(made)} invoice(s) created." if made else
+          "Billing check done: nothing due today.", "ok")
+    return redirect(url_for("plans_page"))
+
+
+def run_billing(day=None):
+    """Create (and email) every monthly invoice that is due. Safe to run any time, from any process."""
+    day = day or today()
+    created = []
+    for r in q("SELECT * FROM recurring WHERE status='active'"):
+        stop = date.fromisoformat(r["stop_after"]) if r["stop_after"] else None
+        for start in B.due_period_starts(r["anchor_day"], date.fromisoformat(r["next_period_start"]), day, stop):
+            iid = _create_period_invoice(r, start)
+            x("UPDATE recurring SET next_period_start=? WHERE id=? AND next_period_start<=?",
+              (B.next_period_start(r["anchor_day"], start).isoformat(), r["id"], start.isoformat()))
+            if iid:
+                created.append(iid)
+                _email_period_invoice(iid)
+        r2 = q("SELECT next_period_start FROM recurring WHERE id=?", (r["id"],), one=True)
+        if stop and date.fromisoformat(r2["next_period_start"]) > stop:
+            x("UPDATE recurring SET status='ended', updated_at=? WHERE id=?", (now_iso(), r["id"]))
+    return created
+
+
+def _create_period_invoice(r, start):
+    client = q("SELECT * FROM clients WHERE id=?", (r["client_id"],), one=True)
+    if not client:
+        log.error("Monthly billing #%s: client %s missing", r["id"], r["client_id"])
+        return None
+    label = B.period_label(r["anchor_day"], start)
+    items = [dict(it, description=f"{it['description']} ({label})") for it in plan_items(r["id"])]
+    data = {"client_name": client["name"], "client_email": client["email"] or "", "client_phone": client["phone"] or "",
+            "client_address": client["address"] or "", "client_id": client["id"],
+            "issue_date": start.isoformat(),
+            "due_date": (start + timedelta(days=int(settings()["default_due_days"] or 0))).isoformat(),
+            "tax_name": r["tax_name"], "tax_rate": r["tax_rate"], "discount_cents": r["discount_cents"],
+            "notes": r["notes"], "terms": r["terms"], "etransfer_email": r["etransfer_email"]}
+    total = compute_totals(items, r["tax_rate"], r["discount_cents"])["total"]
+    status = L.after_send(L.Invoice(L.DRAFT, total, 0, data["due_date"], r["created_by"]))
+    try:
+        with db() as con:
+            return _insert_invoice(con, data, items, r["created_by"], status,
+                                   f"Created and marked sent by monthly billing ({label})",
+                                   recurring_id=r["id"], period_start=start.isoformat())
+    except sqlite3.IntegrityError:
+        return None          # another process already created this period
+
+
+def _email_period_invoice(iid):
+    inv = q("SELECT * FROM invoices WHERE id=?", (iid,), one=True)
+    if inv["status"] == L.PAID:
+        return
+    if not smtp_ready():
+        add_event(iid, "Not emailed automatically: email sending isn't set up")
+        return
+    if not inv["client_email"]:
+        add_event(iid, "Not emailed automatically: the client has no email")
+        return
+    s = settings()
+    try:
+        send_email(inv["client_email"], fill_template(s["email_subject"], inv), fill_template(s["email_body"], inv),
+                   reply_to=s["business_email"] or None)
+        add_event(iid, f"Emailed automatically to {inv['client_email']}")
+    except Exception as e:  # noqa: BLE001
+        log.exception("Automatic email failed for %s", inv["number"])
+        add_event(iid, f"Automatic email to {inv['client_email']} failed: {e}")
+
+
+def start_scheduler(interval=600):
+    """Run monthly billing every `interval` seconds in one process (file lock), started per worker."""
+    import fcntl
+    import threading
+
+    def loop():
+        lock = open(os.path.join(DATA_DIR, "billing.lock"), "w")
+        holder = False
+        while True:
+            if not holder:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    holder = True
+                    log.info("Monthly billing scheduler running (pid %s)", os.getpid())
+                except OSError:
+                    pass
+            if holder:
+                try:
+                    with app.test_request_context(base_url=BASE_URL or "http://localhost/"):
+                        made = run_billing()
+                    if made:
+                        log.info("Monthly billing created invoices %s", made)
+                except Exception:  # noqa: BLE001
+                    log.exception("Monthly billing run failed")
+            time.sleep(interval)
+
+    threading.Thread(target=loop, daemon=True, name="monthly-billing").start()
+
+
 @app.route("/uploads/<path:name>")
 def uploads(name):
     return send_from_directory(UPLOAD_DIR, name, max_age=86400)
@@ -1202,7 +1749,7 @@ def uploads(name):
 TEXT_SETTINGS = ["business_name", "business_address", "business_email", "business_phone", "business_website",
                  "tax_number_label", "tax_number", "accent_color", "invoice_title", "invoice_prefix", "next_number",
                  "default_due_days", "tax_name", "tax_rate", "currency", "default_notes", "default_terms",
-                 "quick_items", "creator_label", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body"]
+                 "creator_label", "etransfer_email", "etransfer_emails", "etransfer_instructions", "email_subject", "email_body"]
 BOOL_SETTINGS = ["show_artist", "etransfer_enabled", "helcim_enabled", "helcim_fee"]
 
 

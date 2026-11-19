@@ -9,8 +9,20 @@ A numbered request for payment from the studio to one Client, made of Line items
 _Avoid_: Bill, quote
 
 **Client**:
-The person or business an Invoice is addressed to.
+The person or business an Invoice is addressed to; saved Clients form one Client list shared by every account.
 _Avoid_: Customer, account
+
+**Saved item**:
+A prepared Line item (name, description, quantity, price, tax) that anyone can add to an Invoice or Monthly billing.
+_Avoid_: Product, preset, quick item
+
+**Monthly billing**:
+An agreement to invoice one Client the same Line items every Billing period until it is stopped.
+_Avoid_: Subscription, recurring invoice, plan
+
+**Billing period**:
+One month of Monthly billing, from its start day to the day before that day next month (e.g. Nov 15 – Dec 14); its Invoice is created, sent and emailed on the first day.
+_Avoid_: Cycle, term
 
 **Line item**:
 One priced entry on an Invoice: description, quantity and unit price.

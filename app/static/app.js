@@ -18,7 +18,8 @@ function num(v) { const n = parseFloat(String(v || '').replace(/[$,\s]/g, '')); 
 function initInvoiceForm() {
   const tbody = document.getElementById('items');
   const tpl = document.getElementById('row-template');
-  const clients = JSON.parse(document.getElementById('clients-data').textContent || '{}');
+  const clientsEl = document.getElementById('clients-data');
+  const clients = clientsEl ? JSON.parse(clientsEl.textContent || '{}') : {};
 
   function wireRow(tr) {
     const box = tr.querySelector('.tax-box'), hidden = tr.querySelector('input[name=item_taxable]');
@@ -33,15 +34,21 @@ function initInvoiceForm() {
     const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
     ta.addEventListener('input', grow); grow();
   }
-  function addRow(desc, price) {
+  function addRow(item) {
     const tr = tpl.content.firstElementChild.cloneNode(true);
     tbody.appendChild(tr); wireRow(tr);
-    if (desc !== undefined) {
-      const empty = [...tbody.querySelectorAll('.item-row')].find(r => !r.querySelector('textarea').value && !r.querySelector('input[name=item_price]').value && r !== tr);
+    if (item) {
+      // reuse an empty row if there is one
+      const empty = [...tbody.querySelectorAll('.item-row')].find(r => r !== tr &&
+        !r.querySelector('textarea').value && !r.querySelector('input[name=item_price]').value);
       const target = empty || tr;
       if (empty) tr.remove();
-      target.querySelector('textarea').value = desc;
-      target.querySelector('input[name=item_price]').value = price || '';
+      target.querySelector('textarea').value = item.desc;
+      target.querySelector('input[name=item_qty]').value = item.qty || '1';
+      target.querySelector('input[name=item_price]').value = item.price || '';
+      const box = target.querySelector('.tax-box');
+      box.checked = item.taxable !== '0';
+      target.querySelector('input[name=item_taxable]').value = box.checked ? '1' : '0';
       target.querySelector('textarea').dispatchEvent(new Event('input'));
     } else {
       tr.querySelector('textarea').focus();
@@ -68,16 +75,30 @@ function initInvoiceForm() {
 
   tbody.querySelectorAll('.item-row').forEach(wireRow);
   document.getElementById('add-item').addEventListener('click', () => addRow());
-  document.querySelectorAll('.chip[data-desc]').forEach(c => c.addEventListener('click', () => addRow(c.dataset.desc, c.dataset.price)));
+  const saved = document.getElementById('add-saved');
+  if (saved) saved.addEventListener('change', () => {
+    const o = saved.selectedOptions[0];
+    if (o && o.dataset.desc !== undefined) addRow({ desc: o.dataset.desc, qty: o.dataset.qty, price: o.dataset.price, taxable: o.dataset.taxable });
+    saved.value = '';
+  });
   ['discount', 'tax_rate', 'tax_name'].forEach(id => document.getElementById(id).addEventListener('input', recalc));
 
   const name = document.getElementById('client_name');
-  name.addEventListener('change', () => {
-    const c = clients[name.value]; if (!c) return;
-    [['client_email', c.email], ['client_phone', c.phone], ['client_address', c.address]].forEach(([id, v]) => {
-      const el = document.getElementById(id); if (!el.value) el.value = v;
-    });
-  });
+  const saveRow = document.getElementById('save-client-row');
+  if (name) {
+    const sync = (fill) => {
+      const c = clients[name.value.trim()] ||
+        Object.entries(clients).find(([k]) => k.toLowerCase() === name.value.trim().toLowerCase())?.[1];
+      if (saveRow) saveRow.style.display = c || !name.value.trim() ? 'none' : '';
+      if (!c || !fill) return;
+      [['client_email', c.email], ['client_phone', c.phone], ['client_address', c.address]].forEach(([id, v]) => {
+        document.getElementById(id).value = v || '';
+      });
+    };
+    name.addEventListener('change', () => sync(true));
+    name.addEventListener('input', () => sync(false));
+    sync(false);
+  }
   recalc();
 }
 
@@ -126,4 +147,18 @@ function initHelcimPay() {
     window.addEventListener('message', onMessage);
     appendHelcimPayIframe(checkoutToken, true);
   });
+}
+
+function initScheduleHint(locked) {
+  const input = document.getElementById('start_date'), hint = document.getElementById('schedule-hint');
+  if (!input || !hint || locked) return;
+  const ord = n => n + ((n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th'));
+  const show = () => {
+    const d = new Date(input.value + 'T12:00:00');
+    if (isNaN(d)) { hint.textContent = ''; return; }
+    const day = d.getDate();
+    const period = day === 1 ? 'the 1st to the end of each month' : `the ${ord(day)} to the ${ord(day - 1)} of each month`;
+    hint.textContent = `Billing periods run from ${period}. Each invoice is created and emailed on the first day of its period.`;
+  };
+  input.addEventListener('input', show); show();
 }

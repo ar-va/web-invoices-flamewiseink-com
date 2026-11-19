@@ -52,8 +52,9 @@ post("/settings", {"business_name": "Flame Wise Tattoo Collective", "business_ad
                    "email_body": A.DEFAULTS["email_body"], "show_artist": "on", "tax_number_label": "HST #", "tax_number": "123"})
 
 # new invoice form
+post("/items", {"name": "Tattoo session (hourly)", "description": "Tattoo session", "qty": "1", "price": "150", "taxable": "on"})
 h = get("/invoices/new")
-assert "Tattoo session (hourly)" in h
+assert "Tattoo session (hourly)" in h and 'data-price="150.00"' in h
 # validation error
 r = post("/invoices/new", {"client_name": "", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "13"}, code=400)
 # create
@@ -184,8 +185,11 @@ post("/settings", {"business_name": "Flame Wise Tattoo Collective", "accent_colo
                    "etransfer_instructions": A.DEFAULTS["etransfer_instructions"], "helcim_enabled": "on",
                    "email_subject": A.DEFAULTS["email_subject"], "email_body": A.DEFAULTS["email_body"]})
 f = get("/invoices/new")
-assert f.count('<option value="artie@flamewiseink.ca">') == 1 and f.count('<option value="ads@flamewiseink.ca">') == 1
-assert 'name="etransfer_email" value="ads@flamewiseink.ca"' in f
+import re as _re
+_sel = f[f.index('<select name="etransfer_email">'):]
+_sel = _sel[:_sel.index('</select>')]
+assert _sel.count('value="artie@flamewiseink.ca"') == 1 and _sel.count('value="ads@flamewiseink.ca"') == 1, _sel
+assert _re.search(r'value="ads@flamewiseink.ca"\s+selected>ads@flamewiseink.ca \(default\)', _sel), _sel
 post("/invoices/new", {"client_name": "Carla", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "0",
                        "etransfer_email": "bad-email", "item_desc": ["X"], "item_qty": ["1"], "item_price": ["5"], "item_taxable": ["1"]}, code=400)
 r = post("/invoices/new", {"client_name": "Carla", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "0",
@@ -197,10 +201,10 @@ with A.app.app_context():
 pub = anon.get(f"/i/{ct}").get_data(as_text=True)
 assert 'value="artie@flamewiseink.ca" id="et-email"' in pub and "to artie@flamewiseink.ca" in pub, pub[:3000]
 assert "artie@flamewiseink.ca" in get(f"/invoices/{cid}")
-assert 'value="artie@flamewiseink.ca"' in get(f"/invoices/{cid}/edit")
+assert _re.search(r'value="artie@flamewiseink.ca"\s+selected>', get(f"/invoices/{cid}/edit"))
 # duplicate keeps it
 r = post(f"/invoices/{cid}/duplicate", {})
-assert 'value="artie@flamewiseink.ca"' in get(r.headers["Location"])
+assert _re.search(r'value="artie@flamewiseink.ca"\s+selected>', get(r.headers["Location"]))
 # blank -> default
 post(f"/invoices/{cid}/edit", {"client_name": "Carla", "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "0",
                                "etransfer_email": "", "item_desc": ["X"], "item_qty": ["1"], "item_price": ["5"], "item_taxable": ["1"]})
@@ -314,10 +318,10 @@ _ap = ac.get(f"/invoices/{A1}").get_data(as_text=True)
 assert f"/payments/{apid}/delete" not in _ap and "Delete permanently" not in _ap and "Void invoice" not in _ap
 ac.post(f"/invoices/{A1}/delete", data={"_csrf": t2})
 assert row(A1)["status"] == "partial"
-# client autocomplete: Advertising only sees own clients (Adele, Jane Doe from earlier), not Lena/Carla
+# shared client list: a client added by the admin is offered to Advertising too
+post("/clients", {"name": "Lena", "email": "lena@x.ca", "phone": "416-555-0100"})
 form = ac.get("/invoices/new").get_data(as_text=True)
-assert "adele@x.ca" in form and "lena@x.ca" not in form and "carla" not in form.lower(), form[-800:]
-assert "\"Lena\"" in get("/invoices/new") and "\"Lena\"" not in form   # admin sees all
+assert '"Lena": {"address": "", "email": "lena@x.ca"' in form or '"lena@x.ca"' in form, form[-800:]
 
 # Q4 $0 invoice becomes paid when sent
 Z = new_invoice(c, TOK, "Zero", price="0")
@@ -372,3 +376,135 @@ with A.app.app_context():
 _pp = anon.get(f"/i/{Htok}").get_data(as_text=True)
 assert 'Questions? <a href="mailto:team@flamewise.ca">' in _pp
 print("CONTACT EMAIL TESTS PASSED")
+
+# ===================== Clients, saved items, e-Transfer dropdown, monthly billing =====================
+import datetime as _dt
+TOK = csrf(get("/"))
+
+# -- client list: new name on an invoice is added when "save_client" is ticked
+r = c.post("/invoices/new", data={"_csrf": TOK, "client_name": "Mira Studio", "client_email": "mira@x.ca",
+                                  "issue_date": "2026-11-19", "due_date": "2026-12-03", "tax_rate": "13",
+                                  "save_client": "1", "item_desc": ["Ad"], "item_qty": ["1"], "item_price": ["50"],
+                                  "item_taxable": ["1"]})
+assert r.status_code == 302
+with A.app.app_context():
+    mira = A.q("SELECT * FROM clients WHERE name='Mira Studio'", one=True)
+    assert mira and mira["email"] == "mira@x.ca"
+    assert A.q("SELECT client_id FROM invoices WHERE client_name='Mira Studio'", one=True)["client_id"] == mira["id"]
+# prefill from client page link
+assert 'value="mira@x.ca"' in get(f"/invoices/new?client_id={mira['id']}")
+# duplicates refused, Advertising can add but not edit
+post("/clients", {"name": "mira studio"})
+with A.app.app_context():
+    assert A.q("SELECT COUNT(*) n FROM clients WHERE name LIKE 'mira studio'", one=True)["n"] == 1
+t2 = csrf(ac.get("/clients").get_data(as_text=True))
+assert ac.post("/clients", data={"_csrf": t2, "name": "Carrie Lead", "email": "lead@x.ca"}).status_code == 302
+assert ac.get(f"/clients/{mira['id']}/edit").status_code == 403
+assert "Mira Studio" in ac.get("/clients").get_data(as_text=True)          # shared list
+post(f"/clients/{mira['id']}/edit", {"name": "Mira Studio", "email": "billing@mira.ca", "phone": "", "address": "", "notes": "VIP"})
+with A.app.app_context():
+    assert A.q("SELECT email FROM clients WHERE id=?", (mira["id"],), one=True)["email"] == "billing@mira.ca"
+    assert A.q("SELECT client_email FROM invoices WHERE client_name='Mira Studio'", one=True)["client_email"] == "mira@x.ca"
+
+# -- saved items: Advertising can add/edit/remove
+assert ac.post("/items", data={"_csrf": t2, "name": "Ad package", "description": "Advertising – monthly package",
+                               "qty": "1", "price": "300", "taxable": "on"}).status_code == 302
+with A.app.app_context():
+    item = A.q("SELECT * FROM catalog WHERE name='Ad package'", one=True)
+    assert item["unit_cents"] == 30000 and item["taxable"] == 1
+ac.post(f"/items/{item['id']}", data={"_csrf": t2, "name": "Ad package", "description": "Advertising – monthly package",
+                                      "qty": "1", "price": "350"})
+with A.app.app_context():
+    item = A.q("SELECT * FROM catalog WHERE id=?", (item["id"],), one=True)
+    assert item["unit_cents"] == 35000 and item["taxable"] == 0
+assert 'data-desc="Advertising – monthly package"' in ac.get("/invoices/new").get_data(as_text=True)
+
+# -- monthly billing (Carrie = Advertising account "Artie")
+sent = []
+def fake_send(to, subject, body, reply_to=None):
+    sent.append((to, subject, body))
+TODAY = A.today()
+start = TODAY.isoformat()
+with mock.patch.object(A, "send_email", fake_send), mock.patch.object(A, "smtp_ready", lambda: True):
+    r = ac.post("/billing/new", data={"_csrf": t2, "client_id": str(mira["id"]), "start_date": start,
+                                      "tax_name": "HST", "tax_rate": "13", "etransfer_email": "artie@flamewiseink.ca",
+                                      "item_desc": ["Advertising package"], "item_qty": ["1"], "item_price": ["300"],
+                                      "item_taxable": ["1"], "notes": "Thanks!"})
+    assert r.status_code == 302, r.get_data(as_text=True)[:600]
+    rid = int(r.headers["Location"].rstrip("/").split("/")[-1])
+    with A.app.app_context():
+        invs = A.q("SELECT * FROM invoices WHERE recurring_id=?", (rid,))
+        assert len(invs) == 1, len(invs)
+        inv1 = invs[0]
+        label = A.B.period_label(TODAY.day, TODAY)
+        it = A.q("SELECT * FROM items WHERE invoice_id=?", (inv1["id"],), one=True)
+        assert it["description"] == f"Advertising package ({label})", it["description"]
+        assert inv1["status"] == "sent" and inv1["total_cents"] == 33900 and inv1["client_email"] == "billing@mira.ca"
+        assert inv1["created_by"] == A.q("SELECT id FROM users WHERE email='artie@x.ca'", one=True)["id"]
+        assert inv1["etransfer_email"] == "artie@flamewiseink.ca" and inv1["issue_date"] == start
+    assert sent and sent[0][0] == "billing@mira.ca" and inv1["number"] in sent[0][1]
+    assert any("Emailed automatically to billing@mira.ca" in e for e in events(inv1["id"]))
+    # running again the same day creates nothing (no duplicates, no second email)
+    with A.app.test_request_context():
+        assert A.run_billing() == []
+    assert len(sent) == 1
+    # next period: created exactly on its first day, catch-up after downtime creates each missed period once
+    nxt = A.B.next_period_start(TODAY.day, TODAY)
+    with A.app.test_request_context():
+        assert A.run_billing(nxt - _dt.timedelta(days=1)) == []
+        made = A.run_billing(A.B.next_period_start(TODAY.day, nxt))
+    assert len(made) == 2 and len(sent) == 3
+    with A.app.app_context():
+        periods = [r_["period_start"] for r_ in A.q("SELECT period_start FROM invoices WHERE recurring_id=? ORDER BY period_start", (rid,))]
+    assert periods == [TODAY.isoformat(), nxt.isoformat(), A.B.next_period_start(TODAY.day, nxt).isoformat()], periods
+
+# Advertising owner sees the plan and its invoices; another Advertising account doesn't
+assert "Mira Studio" in ac.get("/billing").get_data(as_text=True)
+assert ac.get(f"/invoices/{inv1['id']}").status_code == 200
+other = A.app.test_client()
+post("/users", {"name": "Otto", "email": "otto@x.ca", "role": "advertising", "password": "ottopass123"})
+to = csrf(other.get("/login").get_data(as_text=True))
+other.post("/login", data={"_csrf": to, "email": "otto@x.ca", "password": "ottopass123"})
+assert other.get(f"/billing/{rid}").status_code == 403 and "Mira Studio" not in other.get("/billing").get_data(as_text=True)
+# Studio Manager sees all plans
+assert "Mira Studio" in mc.get("/billing").get_data(as_text=True)
+
+# client with active monthly billing can't be removed
+post(f"/clients/{mira['id']}/delete", {})
+with A.app.app_context():
+    assert A.q("SELECT 1 FROM clients WHERE id=?", (mira["id"],), one=True)
+
+# pause -> nothing created; stop -> ended
+ac.post(f"/billing/{rid}/status", data={"_csrf": t2, "action": "pause"})
+with A.app.test_request_context():
+    far = TODAY + _dt.timedelta(days=200)
+    assert A.run_billing(far) == []
+ac.post(f"/billing/{rid}/status", data={"_csrf": t2, "action": "stop"})
+with A.app.app_context():
+    assert A.q("SELECT status FROM recurring WHERE id=?", (rid,), one=True)["status"] == "ended"
+
+# future start: nothing yet; stop_after ends the plan; no client email -> created, not emailed
+lead = None
+with A.app.app_context():
+    lead = A.q("SELECT id FROM clients WHERE name='Carrie Lead'", one=True)["id"]
+    A.x("UPDATE clients SET email='' WHERE id=?", (lead,))
+fut = (TODAY + _dt.timedelta(days=10))
+r = ac.post("/billing/new", data={"_csrf": t2, "client_id": str(lead), "start_date": fut.isoformat(),
+                                  "stop_after": (fut + _dt.timedelta(days=40)).isoformat(), "tax_rate": "0",
+                                  "etransfer_email": "pay@flamewiseink.ca", "item_desc": ["Ad"], "item_qty": ["1"],
+                                  "item_price": ["100"], "item_taxable": ["1"]})
+rid2 = int(r.headers["Location"].rstrip("/").split("/")[-1])
+with A.app.app_context():
+    assert not A.q("SELECT 1 FROM invoices WHERE recurring_id=?", (rid2,), one=True)
+with mock.patch.object(A, "smtp_ready", lambda: True), A.app.test_request_context():
+    made = A.run_billing(fut + _dt.timedelta(days=120))
+assert len(made) == 2, made            # fut and fut+1 month; third period starts after stop date
+with A.app.app_context():
+    assert A.q("SELECT status FROM recurring WHERE id=?", (rid2,), one=True)["status"] == "ended"
+assert any("client has no email" in e for e in events(made[0]))
+
+# pages render
+for path in ["/clients", "/items", "/billing", f"/billing/{rid}", "/billing/new", f"/clients/{lead}/edit"]:
+    get(path)
+assert "billing has ended" in get(f"/billing/{rid2}")
+print("CLIENTS / ITEMS / MONTHLY BILLING TESTS PASSED")

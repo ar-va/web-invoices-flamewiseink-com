@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Monthly billing{% endblock %}
+{% block content %}
+<div class="view-head">
+  <div>
+    <h1>Monthly billing</h1>
+    <p class="muted">Each plan creates an invoice on the first day of its period, marks it sent and emails the client.</p>
+  </div>
+  <div class="btn-row">
+    {% if sees_all() %}
+    <form method="post" action="{{ url_for('plans_run') }}" class="inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="btn ghost">Run billing check now</button></form>
+    {% endif %}
+    <a class="btn" href="{{ url_for('plan_new') }}">+ New monthly billing</a>
+  </div>
+</div>
+{% if plans %}
+<table class="list">
+  <thead><tr><th>Client</th><th>Period</th><th class="r">Per month</th><th>Next invoice</th><th>Status</th>{% if sees_all() %}<th>Set up by</th>{% endif %}</tr></thead>
+  <tbody>
+  {% for r in plans %}
+    <tr onclick="location.href='{{ url_for('plan_view', rid=r.id) }}'">
+      <td><a href="{{ url_for('plan_view', rid=r.id) }}">{{ r.client_name }}</a></td>
+      <td>{{ schedule_label(r.anchor_day) }}</td>
+      <td class="r">{{ plan_total(r)|money }}</td>
+      <td>{{ plan_next_label(r) or '—' }}</td>
+      <td><span class="badge {{ 'paid' if r.status == 'active' else ('partial' if r.status == 'paused' else 'void') }}">{{ r.status }}</span></td>
+      {% if sees_all() %}<td class="muted">{{ r.owner_name or '' }}</td>{% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty card"><p>No monthly billing yet.</p><a class="btn" href="{{ url_for('plan_new') }}">+ New monthly billing</a></div>
+{% endif %}
+{% endblock %}

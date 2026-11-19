@@ -1,0 +1,13 @@
+{# e-Transfer email dropdown. Needs: etransfer_current #}
+{% set opts = etransfer_email_options() %}
+<label>e-Transfer email
+  <select name="etransfer_email">
+    {% for e in opts %}
+      <option value="{{ e }}" {% if (etransfer_current or s.etransfer_email) == e %}selected{% endif %}>{{ e }}{% if e == s.etransfer_email %} (default){% endif %}</option>
+    {% endfor %}
+    {% if etransfer_current and etransfer_current not in opts %}
+      <option value="{{ etransfer_current }}" selected>{{ etransfer_current }}</option>
+    {% endif %}
+  </select>
+</label>
+{% if current_user().role == 'admin' %}<p class="small muted">Add or change these in <a href="{{ url_for('settings_page') }}#payments">Settings → Payments</a>.</p>{% endif %}

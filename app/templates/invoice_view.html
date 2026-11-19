@@ -10,7 +10,7 @@
   <div>
     <a class="muted small" href="{{ url_for('dashboard') }}">← Invoices</a>
     <h1>{{ inv.number }} <span class="badge {{ st }}">{{ st }}</span></h1>
-    <div class="muted">{{ inv.client_name }} · {{ inv.total_cents|money }}{% if balance > 0 and inv.status != 'void' %} · <strong>{{ balance|money }} due</strong>{% endif %}</div>
+    <div class="muted">{% if inv.recurring_id %}<a href="{{ url_for('plan_view', rid=inv.recurring_id) }}">Monthly billing</a> · {% endif %}{{ inv.client_name }} · {{ inv.total_cents|money }}{% if balance > 0 and inv.status != 'void' %} · <strong>{{ balance|money }} due</strong>{% endif %}</div>
   </div>
   <div class="btn-row">
     {% if 'edit' in acts %}<a class="btn ghost" href="{{ url_for('invoice_edit', iid=inv.id) }}">Edit</a>{% endif %}

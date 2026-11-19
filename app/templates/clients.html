@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Clients{% endblock %}
+{% block content %}
+<h1>Clients</h1>
+<div class="grid2 wide-left">
+  <section>
+    <form class="search" method="get" style="margin:0 0 .8rem">
+      <input type="search" name="q" value="{{ search }}" placeholder="Search name, email, phone">
+    </form>
+    {% if clients %}
+    <table class="list compact">
+      <thead><tr><th>Name</th><th>Contact</th><th class="r">Invoices</th><th></th></tr></thead>
+      <tbody>
+      {% for c in clients %}
+        <tr>
+          <td><strong>{{ c.name }}</strong>{% if c.plan_count %} <span class="badge sent">monthly</span>{% endif %}
+            {% if c.notes %}<div class="small muted pre">{{ c.notes }}</div>{% endif %}</td>
+          <td class="small">{{ c.email or '' }}{% if c.phone %}<br>{{ c.phone }}{% endif %}</td>
+          <td class="r">{{ c.invoice_count }}</td>
+          <td class="r nowrap">
+            <a class="btn small ghost" href="{{ url_for('invoice_new', client_id=c.id) }}">New invoice</a>
+            <a class="btn small ghost" href="{{ url_for('plan_new', client_id=c.id) }}">Monthly</a>
+            {% if sees_all() %}<a class="small" href="{{ url_for('client_edit', cid=c.id) }}">Edit</a>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="card empty"><p>{% if search %}No clients match "{{ search }}".{% else %}No clients yet. Add one, or they're added automatically when you create an invoice.{% endif %}</p></div>
+    {% endif %}
+  </section>
+  <section class="card">
+    <h2>Add client</h2>
+    <form method="post" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label>Name <input name="name" required></label>
+      <label>Email <input type="email" name="email"></label>
+      <label>Phone <input name="phone"></label>
+      <label>Address <textarea name="address" rows="2"></textarea></label>
+      <label>Notes <span class="muted small">(only staff see these)</span> <textarea name="notes" rows="2"></textarea></label>
+      <button class="btn full">Add client</button>
+    </form>
+    <p class="small muted">Everyone can use this list. {% if not sees_all() %}Ask an Admin or Studio Manager to change or remove a client.{% endif %}</p>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ 'New monthly billing' if is_new else 'Edit monthly billing' }}{% endblock %}
+{% block content %}
+<h1>{{ 'New monthly billing' if is_new else 'Edit monthly billing' }}</h1>
+<form method="post" id="invoice-form" class="invoice-form" autocomplete="off">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <div class="grid2">
+    <section class="card">
+      <h2>Client</h2>
+      {% if clients %}
+      <label>Client
+        <select name="client_id" required>
+          <option value="">Choose a client…</option>
+          {% for c in clients %}<option value="{{ c.id }}" {% if plan.client_id == c.id %}selected{% endif %}>{{ c.name }}{% if not c.email %} (no email){% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      {% else %}
+      <p>Add the client first on the <a href="{{ url_for('clients_page') }}">Clients</a> page.</p>
+      {% endif %}
+      <p class="small muted">Invoices are emailed to the client's email on the client list. <a href="{{ url_for('clients_page') }}" target="_blank" rel="noopener">Add a client</a></p>
+    </section>
+    <section class="card">
+      <h2>Schedule</h2>
+      <div class="grid2 tight">
+        <label>First billing date
+          <input type="date" name="start_date" value="{{ plan.start_date }}" id="start_date" required {% if locked_start %}disabled{% endif %}></label>
+        <label>Stop after <span class="muted small">(optional)</span>
+          <input type="date" name="stop_after" value="{{ plan.stop_after or '' }}"></label>
+      </div>
+      <p class="small" id="schedule-hint">{% if locked_start %}Billing started, so the period day is fixed. To change it, stop this one and set up a new one.{% endif %}</p>
+      <div class="grid2 tight">
+        <label>Tax name <input name="tax_name" value="{{ plan.tax_name or '' }}" id="tax_name"></label>
+        <label>Tax rate % <input name="tax_rate" value="{{ plan.tax_rate }}" inputmode="decimal" id="tax_rate"></label>
+      </div>
+      {% set etransfer_current = plan.etransfer_email %}
+      {% include "_etransfer_select.html" %}
+    </section>
+  </div>
+
+  {% set editor_discount = plan.discount %}
+  {% include "_items_editor.html" %}
+  <p class="small muted">Each invoice adds its billing period to every line, e.g. "Advertising package (Nov 15 – Dec 14, 2026)".</p>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Notes <span class="muted small">(shown on each invoice)</span></h2>
+      <textarea name="notes" rows="3">{{ plan.notes or '' }}</textarea>
+    </section>
+    <section class="card">
+      <h2>Terms</h2>
+      <textarea name="terms" rows="3">{{ plan.terms or '' }}</textarea>
+    </section>
+  </div>
+  <div class="actions">
+    <button class="btn">{{ 'Start monthly billing' if is_new else 'Save changes' }}</button>
+    <a class="btn ghost" href="{{ url_for('plans_page') if is_new else url_for('plan_view', rid=plan.id) }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
+{% block scripts %}<script>initInvoiceForm(); initScheduleHint({{ 'true' if locked_start else 'false' }});</script>{% endblock %}
