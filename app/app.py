@@ -1245,18 +1245,35 @@ def helcim_start(token):
     }
     if settings()["helcim_fee"] == "1":
         payload["hasConvenienceFee"] = 1
+    unavailable = "Card payments are unavailable right now. Please use e-Transfer or try again later."
+    # Errors use 400, not 502/504: Cloudflare replaces those with its own web page.
     try:
-        r = requests.post(f"{HELCIM_API}/helcim-pay/initialize", json=payload, headers=helcim_headers(), timeout=20)
-        body = r.json() if r.content else {}
+        r, body = _helcim_initialize(payload)
+        if r.status_code == 400 and payload.get("hasConvenienceFee") and "convenience fee" in str(body).lower():
+            # Helcim only allows the fee when bank (ACH) payments are also on. Take the card without it.
+            log.warning("Helcim refused the convenience fee (%s); opening checkout without it", str(body)[:200])
+            add_event(inv["id"], "Card checkout opened without the convenience fee: Helcim needs bank payments "
+                                 "turned on for fees (Settings → Payments)")
+            payload.pop("hasConvenienceFee")
+            r, body = _helcim_initialize(payload)
     except Exception:  # noqa: BLE001
         log.exception("Helcim initialize failed")
-        return jsonify(error="Card payments are unavailable right now. Please use e-Transfer or try again later."), 502
+        return jsonify(error=unavailable), 400
     if r.status_code >= 300 or "checkoutToken" not in body:
         log.error("Helcim initialize HTTP %s: %s", r.status_code, str(body)[:500])
-        return jsonify(error="Card payments are unavailable right now. Please use e-Transfer or try again later."), 502
+        return jsonify(error=unavailable), 400
     x("INSERT INTO helcim_sessions(invoice_id,checkout_token,secret_token,amount_cents,created_at) VALUES(?,?,?,?,?)",
       (inv["id"], body["checkoutToken"], body["secretToken"], due, now_iso()))
     return jsonify(checkoutToken=body["checkoutToken"])
+
+
+def _helcim_initialize(payload):
+    r = requests.post(f"{HELCIM_API}/helcim-pay/initialize", json=payload, headers=helcim_headers(), timeout=20)
+    try:
+        body = r.json() if r.content else {}
+    except ValueError:
+        body = {"raw": r.text[:300]}
+    return r, body
 
 
 def _find_txn(obj, depth=0):
@@ -2035,13 +2052,30 @@ def healthz():
     return "ok"
 
 
+def _is_json_path():
+    return request.path.startswith("/i/") and "/helcim/" in request.path
+
+
 @app.errorhandler(400)
 @app.errorhandler(403)
 @app.errorhandler(404)
+@app.errorhandler(405)
 def _err(e):
-    if request.path.startswith("/i/") and request.path.count("/") > 2:
+    if _is_json_path():
         return jsonify(error=getattr(e, "description", "Error")), e.code
     return render_template("error.html", code=e.code, message=getattr(e, "description", "")), e.code
+
+
+@app.errorhandler(Exception)
+def _crash(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    log.exception("Unhandled error on %s %s", request.method, request.path)
+    if _is_json_path():
+        return jsonify(error="Card payments hit a problem on our side. Please use e-Transfer or try again later."), 400
+    return render_template("error.html", code=500, message="Something went wrong. Try again, and if it keeps "
+                                                          "happening check the container logs in Portainer."), 500
 
 
 @app.context_processor

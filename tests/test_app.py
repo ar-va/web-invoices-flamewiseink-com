@@ -625,3 +625,45 @@ assert r.status_code == 302
 with A.app.app_context():
     assert "plans@flamewiseink.ca" in A.settings()["etransfer_emails"]
 print("NEW E-TRANSFER EMAIL TESTS PASSED")
+
+# --- card payment routes always answer with JSON (never a web page) ---
+os.environ["HELCIM_API_TOKEN"] = "t"
+r = anon.get(f"/i/{Htok}/helcim/start")
+assert r.status_code == 405 and r.is_json, (r.status_code, r.data[:80])
+with mock.patch.object(A.L, "client_can_pay_online", side_effect=RuntimeError("boom")):
+    r = anon.post(f"/i/{Htok}/helcim/start", json={})
+assert r.status_code == 400 and r.is_json and "e-Transfer" in r.get_json()["error"], r.data[:120]
+r = anon.post("/i/no-such-token/helcim/start", json={})
+assert r.status_code == 404 and r.is_json
+# ordinary pages still get the friendly HTML error page
+assert "Not found" in anon.get("/i/no-such-token").get_data(as_text=True)
+os.environ.pop("HELCIM_API_TOKEN")
+print("CARD ROUTE JSON TESTS PASSED")
+
+# --- Helcim refuses the convenience fee: checkout opens without it (and errors never use 502) ---
+os.environ["HELCIM_API_TOKEN"] = "t"
+with A.app.app_context():
+    A.save_settings({"helcim_fee": "1"})
+seen = []
+def init_fee(url, json=None, headers=None, timeout=None):
+    seen.append(dict(json))
+    if json.get("hasConvenienceFee"):
+        return R(400, {"errors": "Convenience fee can only be applied when both payment methods exist"})
+    return R(200, {"checkoutToken": "ct-fee", "secretToken": "s-fee"})
+F = new_invoice(c, csrf(get("/")), "Fiona", price="25")
+post(f"/invoices/{F}/status", {"action": "sent"})
+Ftok = row(F)["token"]
+with mock.patch.object(A.requests, "post", init_fee):
+    r = anon.post(f"/i/{Ftok}/helcim/start", json={})
+assert r.status_code == 200 and r.get_json()["checkoutToken"] == "ct-fee", r.data
+assert seen[0].get("hasConvenienceFee") == 1 and "hasConvenienceFee" not in seen[1]
+assert any("without the convenience fee" in e for e in events(F))
+def init_down(url, json=None, headers=None, timeout=None):
+    return R(500, {"errors": "down"})
+with mock.patch.object(A.requests, "post", init_down):
+    r = anon.post(f"/i/{Ftok}/helcim/start", json={})
+assert r.status_code == 400 and r.is_json
+with A.app.app_context():
+    A.save_settings({"helcim_fee": "0"})
+os.environ.pop("HELCIM_API_TOKEN")
+print("CONVENIENCE FEE FALLBACK TESTS PASSED")

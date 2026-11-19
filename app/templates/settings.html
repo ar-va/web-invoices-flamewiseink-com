@@ -67,6 +67,7 @@
       <div>
         <label class="check"><input type="checkbox" name="helcim_enabled" {% if s.helcim_enabled == '1' %}checked{% endif %}> Offer card payments with Helcim</label>
         <label class="check"><input type="checkbox" name="helcim_fee" {% if s.helcim_fee == '1' %}checked{% endif %}> Pass Helcim's convenience fee to the client</label>
+        <p class="small muted">Only works if bank payments (ACH) are also turned on in Helcim. Otherwise the app takes the card payment without the fee.</p>
         <p class="small">Card payments:
           {% if helcim_token %}<span class="badge paid">connected</span>{% else %}<span class="badge overdue">no token</span> The card button stays hidden until a token is saved.{% endif %}</p>
         {% if helcim_source == 'portainer' %}

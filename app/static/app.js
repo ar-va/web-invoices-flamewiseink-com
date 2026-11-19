@@ -101,8 +101,10 @@ function initHelcimPay() {
     btn.disabled = true; btn.textContent = 'Opening secure checkout…'; say('');
     let checkoutToken;
     try {
-      const r = await fetch(btn.dataset.start, { method: 'POST' });
-      const j = await r.json();
+      const r = await fetch(btn.dataset.start, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: '{}',
+      });
+      const j = await readJson(r);
       if (!r.ok) throw new Error(j.error || 'Could not start card payment.');
       checkoutToken = j.checkoutToken;
     } catch (err) { say(err.message, 'danger'); reset(); return; }
@@ -121,10 +123,10 @@ function initHelcimPay() {
         btn.textContent = 'Confirming payment…'; say('Please keep this page open.');
         try {
           const r = await fetch(btn.dataset.confirm, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
             body: JSON.stringify({ checkoutToken, eventMessage: event.data.eventMessage }),
           });
-          const j = await r.json();
+          const j = await readJson(r);
           if (!r.ok) throw new Error(j.error || 'Could not confirm payment.');
           location.href = location.pathname + '?paid=1';
         } catch (err) { say(err.message, 'danger'); btn.textContent = 'Payment sent'; }
@@ -246,4 +248,16 @@ function initClientPicker(input, clients) {
   list.addEventListener('mousedown', e => { e.preventDefault(); choose(e.target.closest('li')); });
   input.addEventListener('blur', () => setTimeout(close, 100));
   updateStatus();
+}
+
+// Read a JSON reply; if something in between (e.g. Cloudflare) answered with a web page, explain that instead
+async function readJson(r) {
+  const text = await r.text();
+  try { return JSON.parse(text); } catch (_) {}
+  const title = (text.match(/<title>([^<]*)<\/title>/i) || [])[1] || '';
+  const viaCloudflare = /cloudflare|cf-ray|challenge-platform/i.test(text);
+  console.error('Card payment: non-JSON reply', r.status, title, text.slice(0, 500));
+  throw new Error(viaCloudflare
+    ? `Cloudflare stopped the card payment request (HTTP ${r.status}${title ? ': ' + title.trim() : ''}). Please use e-Transfer for now.`
+    : `The server answered with a web page instead of the payment details (HTTP ${r.status}${title ? ': ' + title.trim() : ''}). Please use e-Transfer for now.`);
 }
