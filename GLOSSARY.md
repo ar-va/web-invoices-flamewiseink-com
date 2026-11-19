@@ -47,5 +47,19 @@ A cancelled Invoice with no Payments.
 _Avoid_: Cancelled, deleted
 
 **Overdue**:
-A Sent or Partly paid Invoice past its due date; a view of the status, never stored.
+A Sent or Partly paid Invoice from the day after its due date (Toronto time); a view of the status, never stored.
 _Avoid_: Late
+
+## People
+
+**Admin**:
+An account that can do everything, including settings, accounts and deleting Draft or Void Invoices.
+_Avoid_: Owner, superuser
+
+**Studio Manager**:
+An account that works with every Invoice but cannot change settings, accounts or delete Invoices.
+_Avoid_: Staff, manager
+
+**Advertising**:
+An account that works only with the Invoices it created and cannot remove Payments.
+_Avoid_: Artist, sales
