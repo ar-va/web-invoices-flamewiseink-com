@@ -176,6 +176,11 @@ CREATE TABLE IF NOT EXISTS recurring_items(
   id INTEGER PRIMARY KEY, recurring_id INTEGER NOT NULL REFERENCES recurring(id) ON DELETE CASCADE,
   position INTEGER NOT NULL, description TEXT NOT NULL, qty TEXT NOT NULL,
   unit_cents INTEGER NOT NULL, taxable INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS invoice_shares(
+  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id), shared_by INTEGER, created_at TEXT NOT NULL,
+  PRIMARY KEY(invoice_id, user_id));
+CREATE INDEX IF NOT EXISTS idx_shares_user ON invoice_shares(user_id);
 CREATE INDEX IF NOT EXISTS idx_items_inv ON items(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_pay_inv ON payments(invoice_id);
 """
@@ -392,16 +397,24 @@ def today():
         return datetime.now(ZoneInfo("America/Toronto")).date()
 
 
+def shared_with(iid):
+    """Advertising accounts an invoice is shared with (cached per request)."""
+    cache = g.setdefault("_shares", {})
+    if iid not in cache:
+        cache[iid] = frozenset(r["user_id"] for r in q("SELECT user_id FROM invoice_shares WHERE invoice_id=?", (iid,)))
+    return cache[iid]
+
+
 def state(inv):
-    return L.Invoice.from_row(inv)
+    return L.Invoice.from_row(inv, shared_with(inv["id"]))
 
 
 def display_status(inv):
-    return L.display_status(state(inv), today())
+    return L.display_status(L.Invoice.from_row(inv), today())
 
 
 def balance_of(inv):
-    return L.balance(state(inv))
+    return L.balance(L.Invoice.from_row(inv))
 
 
 app.jinja_env.globals.update(display_status=display_status, balance_of=balance_of, ROLES=ROLES,
@@ -584,8 +597,8 @@ def dashboard():
     u = current_user()
     where, args = ["1=1"], []
     if not sees_all():
-        where.append("i.created_by=?")
-        args.append(u["id"])
+        where.append("(i.created_by=? OR i.id IN (SELECT invoice_id FROM invoice_shares WHERE user_id=?))")
+        args += [u["id"], u["id"]]
     base_where, base_args = list(where), list(args)
 
     f = request.args.get("f", "open")
@@ -906,8 +919,45 @@ def invoice_view(iid):
     inv = get_invoice(iid)
     items, payments = invoice_bundle(iid)
     events = q("SELECT * FROM events WHERE invoice_id=? ORDER BY id DESC LIMIT 50", (iid,))
+    share_ids = shared_with(iid)
+    shared_people = [r["name"] for r in q("SELECT name FROM users WHERE id IN (%s) ORDER BY name"
+                                          % ",".join("?" * len(share_ids)), tuple(share_ids))] if share_ids else []
+    ad_users = q("SELECT id, name FROM users WHERE role=? AND active=1 AND id<>? ORDER BY name",
+                 (L.ADVERTISING, inv["created_by"] or 0))
     return render_template("invoice_view.html", inv=inv, items=items, payments=payments, events=events,
-                           smtp=smtp_ready(), today=today().isoformat(), acts=allowed(inv))
+                           smtp=smtp_ready(), today=today().isoformat(), acts=allowed(inv),
+                           share_ids=share_ids, shared_people=shared_people, ad_users=ad_users)
+
+
+@app.post("/invoices/<int:iid>/share")
+@login_required()
+def invoice_share(iid):
+    inv = get_invoice(iid)
+    try:
+        L.require(state(inv), actor(), L.SHARE)
+    except L.LifecycleError as e:
+        return refuse(iid, e)
+    allowed_ids = {r["id"]: r["name"] for r in q("SELECT id, name FROM users WHERE role=? AND active=1",
+                                                  (L.ADVERTISING,))}
+    wanted = {int(v) for v in request.form.getlist("user_id") if v.isdigit() and int(v) in allowed_ids}
+    wanted.discard(inv["created_by"])
+    current = set(shared_with(iid))
+    added, removed = wanted - current, current - wanted
+    who = current_user()["name"]
+    with db() as con:
+        for uid in added:
+            con.execute("INSERT OR IGNORE INTO invoice_shares(invoice_id,user_id,shared_by,created_at) VALUES(?,?,?,?)",
+                        (iid, uid, current_user()["id"], now_iso()))
+        for uid in removed:
+            con.execute("DELETE FROM invoice_shares WHERE invoice_id=? AND user_id=?", (iid, uid))
+        if added:
+            add_event(iid, f"Shared with {', '.join(sorted(allowed_ids[u] for u in added))} by {who}", con)
+        if removed:
+            names = sorted(allowed_ids.get(u) or q("SELECT name FROM users WHERE id=?", (u,), one=True)["name"]
+                           for u in removed)
+            add_event(iid, f"Stopped sharing with {', '.join(names)} by {who}", con)
+    flash("Sharing updated." if added or removed else "No changes to sharing.", "ok")
+    return redirect(url_for("invoice_view", iid=iid))
 
 
 STATUS_ACTIONS = {

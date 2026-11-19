@@ -17,8 +17,9 @@ AD = L.Actor(3, L.ADVERTISING)
 OTHER_AD = L.Actor(4, L.ADVERTISING)
 
 
-def inv(status="sent", total=10000, paid=0, due="2026-12-03", owner=3):
-    return L.Invoice(status=status, total_cents=total, paid_cents=paid, due_date=due, owner_id=owner)
+def inv(status="sent", total=10000, paid=0, due="2026-12-03", owner=3, shared=()):
+    return L.Invoice(status=status, total_cents=total, paid_cents=paid, due_date=due, owner_id=owner,
+                     shared_with=frozenset(shared))
 
 
 class Reading(unittest.TestCase):
@@ -58,18 +59,29 @@ class Permissions(unittest.TestCase):
         A = L.allowed_actions
         # draft, no payments
         self.assertEqual(A(inv("draft"), AD), {"edit", "email", "send", "void", "record_payment"})
-        self.assertEqual(A(inv("draft"), ADMIN), {"edit", "email", "send", "void", "record_payment", "delete"})
+        self.assertEqual(A(inv("draft"), ADMIN), {"edit", "email", "send", "void", "record_payment", "delete", "share"})
         # sent, no payments: can go back to draft
         self.assertEqual(A(inv("sent"), AD), {"edit", "email", "void", "reopen", "record_payment"})
         # partly paid: no void, no reopen; only admin/manager remove payments
         self.assertEqual(A(inv("partial", paid=5000), AD), {"edit", "email", "record_payment"})
-        self.assertEqual(A(inv("partial", paid=5000), MANAGER), {"edit", "email", "record_payment", "remove_payment"})
+        self.assertEqual(A(inv("partial", paid=5000), MANAGER), {"edit", "email", "record_payment", "remove_payment", "share"})
         # paid: no payments, admin can't delete
-        self.assertEqual(A(inv("paid", paid=10000), ADMIN), {"edit", "email", "remove_payment"})
+        self.assertEqual(A(inv("paid", paid=10000), ADMIN), {"edit", "email", "remove_payment", "share"})
         # void: only reopen (+ delete for admin)
         self.assertEqual(A(inv("void"), AD), {"reopen"})
-        self.assertEqual(A(inv("void"), ADMIN), {"reopen", "delete"})
-        self.assertEqual(A(inv("void"), MANAGER), {"reopen"})
+        self.assertEqual(A(inv("void"), ADMIN), {"reopen", "delete", "share"})
+        self.assertEqual(A(inv("void"), MANAGER), {"reopen", "share"})
+
+    def test_shared_invoice_works_like_own(self):
+        mine = inv("sent", owner=3)
+        shared = inv("sent", owner=2, shared=[4])          # manager's invoice shared with OTHER_AD
+        self.assertEqual(L.allowed_actions(shared, OTHER_AD), L.allowed_actions(mine, AD))
+        self.assertTrue(L.can_view(shared, OTHER_AD))
+        self.assertFalse(L.can_view(shared, AD))           # not shared with this Advertising account
+        self.assertNotIn("share", L.allowed_actions(shared, OTHER_AD))
+        self.assertNotIn("remove_payment", L.allowed_actions(inv("partial", paid=100, owner=2, shared=[4]), OTHER_AD))
+        with self.assertRaisesRegex(L.LifecycleError, "Only Admin and Studio Manager accounts can share"):
+            L.require(shared, OTHER_AD, L.SHARE)
 
     def test_require_gives_readable_reason(self):
         with self.assertRaisesRegex(L.LifecycleError, "can't be voided"):

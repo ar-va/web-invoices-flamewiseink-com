@@ -73,5 +73,9 @@ An account that works with every Invoice but cannot change settings, accounts or
 _Avoid_: Staff, manager
 
 **Advertising**:
-An account that works only with the Invoices it created and cannot remove Payments.
+An account that works only with the Invoices it created or that were Shared with it, and cannot remove Payments.
+
+**Shared**:
+An Invoice an Admin or Studio Manager has opened to chosen Advertising accounts, who then work on it like their own.
+_Avoid_: Assigned, delegated
 _Avoid_: Artist, sales

@@ -16,7 +16,7 @@ ADMIN, MANAGER, ADVERTISING = "admin", "manager", "advertising"
 SEES_ALL_ROLES = (ADMIN, MANAGER)
 
 # Actions a person can take on an Invoice
-EDIT, SEND, EMAIL, VOID_IT, REOPEN = "edit", "send", "email", "void", "reopen"
+EDIT, SEND, EMAIL, VOID_IT, REOPEN, SHARE = "edit", "send", "email", "void", "reopen", "share"
 RECORD_PAYMENT, REMOVE_PAYMENT, DELETE = "record_payment", "remove_payment", "delete"
 
 
@@ -31,11 +31,12 @@ class Invoice:
     paid_cents: int
     due_date: str            # ISO date, e.g. "2026-12-03"
     owner_id: int | None     # account that created it
+    shared_with: frozenset = frozenset()   # Advertising accounts it was shared with
 
     @classmethod
-    def from_row(cls, row):
+    def from_row(cls, row, shared_with=frozenset()):
         return cls(status=row["status"], total_cents=row["total_cents"], paid_cents=row["paid_cents"],
-                   due_date=row["due_date"], owner_id=row["created_by"])
+                   due_date=row["due_date"], owner_id=row["created_by"], shared_with=frozenset(shared_with))
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,11 @@ def sees_all(actor: Actor | None) -> bool:
 
 
 def can_view(inv: Invoice, actor: Actor | None) -> bool:
-    return bool(actor) and (sees_all(actor) or inv.owner_id == actor.id)
+    """Admin/Studio Manager see all; others see Invoices they created or that were shared with them.
+
+    A shared Invoice works exactly like one the person created.
+    """
+    return bool(actor) and (sees_all(actor) or inv.owner_id == actor.id or actor.id in inv.shared_with)
 
 
 def allowed_actions(inv: Invoice, actor: Actor | None) -> frozenset:
@@ -101,6 +106,8 @@ def allowed_actions(inv: Invoice, actor: Actor | None) -> frozenset:
         acts.add(REMOVE_PAYMENT)
     if actor.role == ADMIN and inv.status in (DRAFT, VOID):
         acts.add(DELETE)
+    if actor.role in SEES_ALL_ROLES:
+        acts.add(SHARE)
     return frozenset(acts)
 
 
@@ -121,6 +128,7 @@ _REFUSALS = {
     RECORD_PAYMENT: "This invoice can't take a payment (it's void or already paid).",
     REMOVE_PAYMENT: "Only Admin and Studio Manager accounts can remove payments.",
     DELETE: "Only Admins can delete, and only draft or void invoices. Void it instead.",
+    SHARE: "Only Admin and Studio Manager accounts can share invoices.",
 }
 
 

@@ -508,3 +508,39 @@ for path in ["/clients", "/items", "/billing", f"/billing/{rid}", "/billing/new"
     get(path)
 assert "billing has ended" in get(f"/billing/{rid2}")
 print("CLIENTS / ITEMS / MONTHLY BILLING TESTS PASSED")
+
+# --- Sharing invoices with Advertising ---
+TOK = csrf(get("/"))
+t3 = csrf(mc.get("/").get_data(as_text=True))
+r = mc.post("/invoices/new", data={"_csrf": t3, "client_name": "Shared Co", "issue_date": "2026-11-19",
+                                   "due_date": "2026-12-03", "tax_rate": "0", "item_desc": ["Ad"], "item_qty": ["1"],
+                                   "item_price": ["120"], "item_taxable": ["1"]})
+S = int(r.headers["Location"].split("/")[-1])
+with A.app.app_context():
+    artie_id = A.q("SELECT id FROM users WHERE email='artie@x.ca'", one=True)["id"]
+    otto_id = A.q("SELECT id FROM users WHERE email='otto@x.ca'", one=True)["id"]
+t2 = csrf(ac.get("/").get_data(as_text=True))
+assert ac.get(f"/invoices/{S}").status_code == 403 and "Shared Co" not in ac.get("/?f=all").get_data(as_text=True)
+page = mc.get(f"/invoices/{S}").get_data(as_text=True)
+assert "Share with Advertising" in page and f'value="{artie_id}"' in page
+mc.post(f"/invoices/{S}/share", data={"_csrf": t3, "user_id": [str(artie_id)]})
+assert any("Shared with Artie by Mona" in e for e in events(S)), events(S)
+# Artie: sees it, marked shared, works on it like his own
+d = ac.get("/?f=all").get_data(as_text=True)
+assert "Shared Co" in d and ">shared<" in d
+v = ac.get(f"/invoices/{S}").get_data(as_text=True)
+assert v.count("shared with you") == 1 and "Share with Advertising" not in v and "Record a payment" in v
+assert ac.post(f"/invoices/{S}/status", data={"_csrf": t2, "action": "sent"}).status_code == 302
+assert ac.post(f"/invoices/{S}/payments", data={"_csrf": t2, "amount": "20", "method": "e-Transfer"}).status_code == 302
+assert row(S)["paid_cents"] == 2000 and row(S)["status"] == "partial"
+# Artie can't share it onward, can't remove payments
+ac.post(f"/invoices/{S}/share", data={"_csrf": t2, "user_id": [str(otto_id)]})
+with A.app.app_context():
+    assert A.q("SELECT COUNT(*) n FROM invoice_shares WHERE invoice_id=?", (S,), one=True)["n"] == 1
+# Otto still can't see it
+assert other.get(f"/invoices/{S}").status_code == 403
+# stop sharing
+mc.post(f"/invoices/{S}/share", data={"_csrf": t3})
+assert ac.get(f"/invoices/{S}").status_code == 403
+assert any("Stopped sharing with Artie by Mona" in e for e in events(S))
+print("SHARING TESTS PASSED")

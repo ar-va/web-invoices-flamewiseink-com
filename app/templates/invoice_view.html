@@ -10,7 +10,7 @@
   <div>
     <a class="muted small" href="{{ url_for('dashboard') }}">← Invoices</a>
     <h1>{{ inv.number }} <span class="badge {{ st }}">{{ st }}</span></h1>
-    <div class="muted">{% if inv.recurring_id %}<a href="{{ url_for('plan_view', rid=inv.recurring_id) }}">Monthly billing</a> · {% endif %}{{ inv.client_name }} · {{ inv.total_cents|money }}{% if balance > 0 and inv.status != 'void' %} · <strong>{{ balance|money }} due</strong>{% endif %}</div>
+    <div class="muted">{% if not sees_all() and inv.created_by != current_user().id %}<span class="badge sent">shared with you</span> · {% endif %}{% if inv.recurring_id %}<a href="{{ url_for('plan_view', rid=inv.recurring_id) }}">Monthly billing</a> · {% endif %}{{ inv.client_name }} · {{ inv.total_cents|money }}{% if balance > 0 and inv.status != 'void' %} · <strong>{{ balance|money }} due</strong>{% endif %}</div>
   </div>
   <div class="btn-row">
     {% if 'edit' in acts %}<a class="btn ghost" href="{{ url_for('invoice_edit', iid=inv.id) }}">Edit</a>{% endif %}
@@ -84,6 +84,29 @@
         </li>
       {% endfor %}
       </ul>
+    </div>
+    {% endif %}
+
+    {% if 'share' in acts %}
+    <div class="card">
+      <h2>Share with Advertising</h2>
+      {% if ad_users %}
+      <form method="post" action="{{ url_for('invoice_share', iid=inv.id) }}" class="stack">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        {% for u in ad_users %}
+        <label class="check"><input type="checkbox" name="user_id" value="{{ u.id }}" {% if u.id in share_ids %}checked{% endif %}> {{ u.name }}</label>
+        {% endfor %}
+        <p class="small muted">They can work on it like their own invoice, but can't remove payments or delete it.</p>
+        <button class="btn small full">Save sharing</button>
+      </form>
+      {% else %}
+      <p class="small muted">No other Advertising accounts yet. Add them under Accounts.</p>
+      {% endif %}
+    </div>
+    {% elif shared_people %}
+    <div class="card">
+      <h2>Shared with</h2>
+      <p class="small">{{ shared_people|join(', ') }}</p>
     </div>
     {% endif %}
 

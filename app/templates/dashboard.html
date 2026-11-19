@@ -27,7 +27,7 @@
   {% for i in invoices %}
     {% set st = display_status(i) %}
     <tr onclick="location.href='{{ url_for('invoice_view', iid=i.id) }}'">
-      <td><a href="{{ url_for('invoice_view', iid=i.id) }}">{{ i.number }}</a></td>
+      <td><a href="{{ url_for('invoice_view', iid=i.id) }}">{{ i.number }}</a>{% if not sees_all() and i.created_by != current_user().id %} <span class="badge sent">shared</span>{% endif %}</td>
       <td>{{ i.client_name }}</td>
       <td>{{ i.issue_date|datefmt }}</td>
       <td>{{ i.due_date|datefmt }}</td>
