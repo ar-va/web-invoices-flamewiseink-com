@@ -4,7 +4,7 @@
 services:
   invoices:
     # set by GitHub Actions - do not edit by hand
-    image: ghcr.io/ar-va/flamewise-invoices:74664ee
+    image: ghcr.io/ar-va/flamewise-invoices:17013f0
     container_name: invoices
     restart: unless-stopped
     ports:
